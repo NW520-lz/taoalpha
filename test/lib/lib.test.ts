@@ -35,6 +35,7 @@ test("msToIso converts OKX millisecond strings and returns null for empty or mal
   assert.equal(msToIso("1793188800000"), "2026-10-28T12:00:00.000Z");
   assert.equal(msToIso(""), null);
   assert.equal(msToIso("abc"), null);
+  assert.equal(msToIso("99999999999999999999"), null);
 });
 
 test("newId is prefixed and unique", () => {

@@ -71,5 +71,8 @@ test("refuses any path outside the read-only public and market APIs", async () =
   const client = createPublicClient({ fetch: fakeFetch(200, '{"code":"0","data":[]}', calls) });
   await assert.rejects(client.get("/api/v5/trade/order", {}), /only reads \/api\/v5\/public and \/api\/v5\/market/);
   await assert.rejects(client.get("/api/v5/account/balance", {}), /only reads/);
+  await assert.rejects(client.get("/api/v5/market/../trade/order", {}), /only reads/);
+  await assert.rejects(client.get("/api/v5/market/%2e%2e/trade/order", {}), /only reads/);
+  await assert.rejects(client.get("/api/v5/market/ticker?instId=BTC-USDT", {}), /only reads/);
   assert.deepEqual(calls, []);
 });

@@ -1,4 +1,7 @@
-/** Read-only client for OKX public REST endpoints. It never signs requests and cannot reach trading or account APIs. */
+/**
+ * Read-only client for OKX public REST endpoints. It never signs requests and only sends GET requests
+ * to /api/v5/public and /api/v5/market paths, so it cannot reach trading or account APIs.
+ */
 export const OKX_SITES = { global: "https://www.okx.com" } as const;
 export type OkxSite = keyof typeof OKX_SITES;
 
@@ -50,7 +53,10 @@ export function createPublicClient(options: PublicClientOptions = {}): PublicCli
   const now = options.now ?? (() => new Date());
 
   async function get<T>(path: string, query: Record<string, string>): Promise<PublicResult<T>> {
-    if (!READ_ONLY_PREFIXES.some((prefix) => path.startsWith(prefix))) {
+    // Compare the path as the URL parser normalizes it, so dot segments, encoded dot segments,
+    // query strings and fragments cannot slip past the prefix check and resolve elsewhere.
+    const normalized = new URL(path, baseUrl).pathname;
+    if (normalized !== path || !READ_ONLY_PREFIXES.some((prefix) => normalized.startsWith(prefix))) {
       throw new Error(`public client only reads /api/v5/public and /api/v5/market, got ${path}`);
     }
     const endpoint = `${path}?${new URLSearchParams(query).toString()}`;
