@@ -73,3 +73,10 @@ test("keeps non-live instruments so the scanner can exclude them explicitly", ()
   const [parsed] = parseInstruments([row({ instId: "OLD-USDT", instType: "SPOT", baseCcy: "OLD", quoteCcy: "USDT", state: "suspend" })]);
   assert.equal(parsed?.state, "suspend");
 });
+
+test("a linear USDT swap without ctVal is excluded", () => {
+  const parsed = parseInstruments([
+    row({ instId: "BTC-USDT-SWAP", instType: "SWAP", settleCcy: "USDT", ctType: "linear", ctVal: "", ctValCcy: "BTC" }),
+  ]);
+  assert.deepEqual(parsed, []);
+});

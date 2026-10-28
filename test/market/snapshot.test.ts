@@ -113,7 +113,13 @@ test("spot: turnover is volCcy24h in USDT, depth is price × base size, derivati
   assert.equal(snap.site, "global");
   assert.equal(snap.ticker?.value.turnover24hUsdt, "365035696.193301184");
   assert.equal(snap.ticker?.value.turnoverMethod, "spot_volCcy24h");
-  assert.deepEqual(snap.depth?.value, { levels: 2, bidNotionalUsdt: "85454.4623342", askNotionalUsdt: "300979.666380106" });
+  assert.deepEqual(snap.depth?.value, {
+    requestedLevels: 2,
+    bidLevels: 2,
+    askLevels: 2,
+    bidNotionalUsdt: "85454.4623342",
+    askNotionalUsdt: "300979.666380106",
+  });
   assert.equal(snap.derivatives, "not_applicable");
   assert.deepEqual(snap.gaps, []);
 });
@@ -134,7 +140,13 @@ test("perpetual: turnover converts base-coin volume with last price, depth conve
   const snap = buildSnapshot("global", PERP, perpSources(), 2);
   assert.equal(snap.ticker?.value.turnover24hUsdt, "4825037838.5377");
   assert.equal(snap.ticker?.value.turnoverMethod, "perp_volCcy24h_x_last");
-  assert.deepEqual(snap.depth?.value, { levels: 2, bidNotionalUsdt: "1192688.7525", askNotionalUsdt: "701546.46663" });
+  assert.deepEqual(snap.depth?.value, {
+    requestedLevels: 2,
+    bidLevels: 2,
+    askLevels: 2,
+    bidNotionalUsdt: "1192688.7525",
+    askNotionalUsdt: "701546.46663",
+  });
   assert.ok(snap.derivatives !== "not_applicable");
   assert.deepEqual(snap.derivatives.funding?.value, {
     rate: "0.0000613610007354",
@@ -169,4 +181,62 @@ test("a missing book is a depth gap", () => {
   const snap = buildSnapshot("global", SPOT, { ticker: sourced(spotTicker, T_TICKER, "raw_t") }, 2);
   assert.equal(snap.depth, null);
   assert.deepEqual(snap.gaps, ["depth:missing"]);
+});
+
+test("a short book reports the levels actually summed, not the levels requested", () => {
+  const shortBook: OkxBookRow = {
+    asks: [["10", "2", "0", "1"]],
+    bids: [["9", "1", "0", "1"], ["8", "1", "0", "1"]],
+    ts: TS,
+  };
+  const snap = buildSnapshot("global", SPOT, { ticker: sourced(spotTicker, T_TICKER, "raw_t"), book: sourced(shortBook, T_BOOK, "raw_b") }, 5);
+  assert.deepEqual(snap.depth?.value, {
+    requestedLevels: 5,
+    bidLevels: 2,
+    askLevels: 1,
+    bidNotionalUsdt: "17",
+    askNotionalUsdt: "20",
+  });
+  assert.deepEqual(snap.gaps, []);
+});
+
+test("an empty book side or a malformed level makes depth incomplete", () => {
+  const emptyBidBook: OkxBookRow = { ...spotBook, bids: [] };
+  const emptyBid = buildSnapshot("global", SPOT, { ticker: sourced(spotTicker, T_TICKER, "raw_t"), book: sourced(emptyBidBook, T_BOOK, "raw_b") }, 2);
+  assert.equal(emptyBid.depth, null);
+  assert.deepEqual(emptyBid.gaps, ["depth:incomplete"]);
+
+  const malformedBook: OkxBookRow = { ...spotBook, asks: [["abc", "1", "0", "1"]] };
+  const malformed = buildSnapshot("global", SPOT, { ticker: sourced(spotTicker, T_TICKER, "raw_t"), book: sourced(malformedBook, T_BOOK, "raw_b") }, 2);
+  assert.equal(malformed.depth, null);
+  assert.deepEqual(malformed.gaps, ["depth:incomplete"]);
+});
+
+test("unusable derivative fields are incomplete, never zero", () => {
+  const withFunding = { ...perpSources(), funding: sourced({ ...funding, fundingRate: "" }, T_TICKER, "raw_f") };
+  const fundingSnap = buildSnapshot("global", PERP, withFunding, 2);
+  assert.ok(fundingSnap.derivatives !== "not_applicable");
+  assert.equal(fundingSnap.derivatives.funding, null);
+  assert.deepEqual(fundingSnap.gaps, ["funding:incomplete"]);
+
+  const withOi = { ...perpSources(), openInterest: sourced({ ...openInterest, oiUsd: "" }, T_TICKER, "raw_oi") };
+  assert.deepEqual(buildSnapshot("global", PERP, withOi, 2).gaps, ["openInterest:incomplete"]);
+
+  const withMark = { ...perpSources(), markPrice: sourced({ ...markPrice, markPx: "" }, T_TICKER, "raw_m") };
+  assert.deepEqual(buildSnapshot("global", PERP, withMark, 2).gaps, ["markPx:incomplete"]);
+
+  const withIndex = { ...perpSources(), indexTicker: sourced({ ...indexTicker, idxPx: "" }, T_TICKER, "raw_i") };
+  assert.deepEqual(buildSnapshot("global", PERP, withIndex, 2).gaps, ["indexPx:incomplete"]);
+});
+
+test("contract value scales perpetual depth", () => {
+  const scaled: Instrument = { ...PERP, ctVal: "10" };
+  const book: OkxBookRow = {
+    asks: [["2", "3", "0", "1"]],
+    bids: [["2", "5", "0", "1"]],
+    ts: TS,
+  };
+  const snap = buildSnapshot("global", scaled, { book: sourced(book, T_BOOK, "raw_b") }, 1);
+  assert.equal(snap.depth?.value.bidNotionalUsdt, "100");
+  assert.equal(snap.depth?.value.askNotionalUsdt, "60");
 });

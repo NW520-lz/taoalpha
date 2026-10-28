@@ -75,7 +75,11 @@ export interface TickerFields {
 }
 
 export interface DepthFields {
-  levels: number;
+  /** Levels requested per side. */
+  requestedLevels: number;
+  /** Levels actually summed per side; fewer than requested means the book is that thin. */
+  bidLevels: number;
+  askLevels: number;
   bidNotionalUsdt: string;
   askNotionalUsdt: string;
 }
@@ -148,24 +152,33 @@ export function tickerFields(instrument: Instrument, row: OkxTickerRow): TickerF
   };
 }
 
-function depthFields(instrument: Instrument, row: OkxBookRow, levels: number): DepthFields | null {
-  const bid = sideNotional(instrument, row.bids, levels);
-  const ask = sideNotional(instrument, row.asks, levels);
+function depthFields(instrument: Instrument, row: OkxBookRow, requestedLevels: number): DepthFields | null {
+  const bid = sideNotional(instrument, row.bids, requestedLevels);
+  const ask = sideNotional(instrument, row.asks, requestedLevels);
   if (bid === null || ask === null) return null;
-  return { levels, bidNotionalUsdt: bid.toFixed(), askNotionalUsdt: ask.toFixed() };
+  return {
+    requestedLevels,
+    bidLevels: bid.levels,
+    askLevels: ask.levels,
+    bidNotionalUsdt: bid.notional.toFixed(),
+    askNotionalUsdt: ask.notional.toFixed(),
+  };
 }
 
-/** Sum of price × size over the top levels. Perpetual sizes are contracts and are converted with ctVal. */
-function sideNotional(instrument: Instrument, entries: string[][], levels: number): Decimal | null {
-  const top = entries.slice(0, levels);
+/**
+ * Sum of price × size over the top levels, with the number of levels actually summed.
+ * Perpetual sizes are contracts and are converted with ctVal. An empty side or a malformed level is null.
+ */
+function sideNotional(instrument: Instrument, entries: string[][], requestedLevels: number): { notional: Decimal; levels: number } | null {
+  const top = entries.slice(0, requestedLevels);
   if (top.length === 0) return null;
   const contractValue = instrument.ctVal === null ? new Decimal(1) : dec(instrument.ctVal);
-  let total = new Decimal(0);
+  let notional = new Decimal(0);
   for (const [px, sz] of top) {
-    if (!allDecimal(px ?? "", sz ?? "")) return null;
-    total = total.add(dec(px ?? "").mul(dec(sz ?? "")).mul(contractValue));
+    if (px === undefined || sz === undefined || !allDecimal(px, sz)) return null;
+    notional = notional.add(dec(px).mul(dec(sz)).mul(contractValue));
   }
-  return total;
+  return { notional, levels: top.length };
 }
 
 function observeGroup<R extends { ts: string }, V>(
