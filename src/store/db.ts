@@ -9,7 +9,8 @@ export type SqlParam = null | number | bigint | string;
 export function openDb(path: string): Db {
   if (path !== ":memory:") mkdirSync(dirname(path), { recursive: true });
   const db = new DatabaseSync(path);
-  db.exec("PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON; PRAGMA busy_timeout = 5000;");
+  // busy_timeout first so the WAL switch waits for other processes; recursive_triggers makes INSERT OR REPLACE fire the immutability DELETE triggers.
+  db.exec("PRAGMA busy_timeout = 5000; PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON; PRAGMA recursive_triggers = ON;");
   for (const statement of SCHEMA) db.exec(statement);
   return db;
 }
@@ -22,7 +23,8 @@ export function inTransaction<T>(db: Db, fn: () => T): T {
     db.exec("COMMIT");
     return result;
   } catch (err) {
-    db.exec("ROLLBACK");
+    // SQLite may already have rolled back (e.g. after an I/O error); a second ROLLBACK would mask the original error.
+    if (db.isTransaction) db.exec("ROLLBACK");
     throw err;
   }
 }

@@ -56,6 +56,8 @@ test("evidence bundles round-trip, hash their content, and are frozen", () => {
   assert.equal(getBundle(db, "bundle_missing"), null);
   assert.throws(() => db.exec("UPDATE evidence_bundles SET content = '{}'"), /immutable/);
   assert.throws(() => db.exec("DELETE FROM evidence_bundles"), /immutable/);
+  assert.throws(() => db.prepare("INSERT OR REPLACE INTO evidence_bundles (id, created_at, content, content_sha256) VALUES (?, ?, ?, ?)").run(bundle.id, bundle.createdAt, "{}", "x"), /immutable/);
+  assert.deepEqual(getBundle(db, bundle.id), bundle);
 });
 
 test("latestBundleId returns the newest bundle, or null when there is none", () => {
@@ -76,6 +78,27 @@ test("inTransaction commits on success and rolls back on error", () => {
     }),
   /boom/);
   assert.equal(allRows(db, "SELECT id FROM raw_responses").length, 1);
+});
+
+test("a failed transaction rethrows the caller's error even if SQLite already rolled back", () => {
+  const db = openDb(":memory:");
+  assert.throws(() =>
+    inTransaction(db, () => {
+      db.exec("ROLLBACK");
+      throw new Error("original");
+    }),
+  /original/);
+  assert.equal(db.isTransaction, false);
+});
+
+test("raw responses and audit events cannot be rewritten", () => {
+  const db = openDb(":memory:");
+  saveRaw(db, RAW);
+  assert.throws(() => db.exec("UPDATE raw_responses SET body = 'x'"), /immutable/);
+  assert.throws(() => db.exec("DELETE FROM raw_responses"), /immutable/);
+  appendAudit(db, "2026-10-28T12:00:00.000Z", "scan.completed", "bundle_1", { candidates: 3 });
+  assert.throws(() => db.exec("UPDATE audit_events SET type = 'x'"), /append-only/);
+  assert.throws(() => db.exec("DELETE FROM audit_events"), /append-only/);
 });
 
 test("appendAudit stores events in insertion order", () => {

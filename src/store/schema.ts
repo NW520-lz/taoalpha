@@ -8,6 +8,10 @@ export const SCHEMA: string[] = [
     body TEXT NOT NULL,
     body_sha256 TEXT NOT NULL
   )`,
+  `CREATE TRIGGER IF NOT EXISTS raw_responses_no_update BEFORE UPDATE ON raw_responses
+    BEGIN SELECT RAISE(ABORT, 'raw responses are immutable'); END`,
+  `CREATE TRIGGER IF NOT EXISTS raw_responses_no_delete BEFORE DELETE ON raw_responses
+    BEGIN SELECT RAISE(ABORT, 'raw responses are immutable'); END`,
   `CREATE TABLE IF NOT EXISTS evidence_items (
     id TEXT PRIMARY KEY,
     kind TEXT NOT NULL CHECK (kind IN ('market_snapshot', 'external_source')),
@@ -42,4 +46,8 @@ export const SCHEMA: string[] = [
     ref TEXT NOT NULL,
     detail TEXT NOT NULL
   )`,
+  `CREATE TRIGGER IF NOT EXISTS audit_events_no_update BEFORE UPDATE ON audit_events
+    BEGIN SELECT RAISE(ABORT, 'audit events are append-only'); END`,
+  `CREATE TRIGGER IF NOT EXISTS audit_events_no_delete BEFORE DELETE ON audit_events
+    BEGIN SELECT RAISE(ABORT, 'audit events are append-only'); END`,
 ];
