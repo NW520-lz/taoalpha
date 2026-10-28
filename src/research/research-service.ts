@@ -6,6 +6,7 @@ import { getBundle, saveEvidence } from "../store/evidence-store.ts";
 import { appendAudit } from "../store/audit.ts";
 import type { ScanContent } from "../scan/scan.ts";
 import { COMMON_RULES_ZH, ROLE_BRIEF_ZH, ROLES_BY_PHASE, type ResearchPhase, type ResearchRole } from "./roles.ts";
+import { decide, type Decision } from "./decision.ts";
 import { collectEvidenceRefs, parseReport, type AdversaryReport, type AgentReport, type StoredOutcome, type SynthesisReport } from "./report-schema.ts";
 
 export type AgentMode = "parallel_independent" | "serial_degraded";
@@ -53,7 +54,8 @@ export interface ResearchRunView {
   assignments: AssignmentView[];
   reports: PriorReport[];
   missingRoles: ResearchRole[];
-  decision: null;
+  /** Set once synthesis is finished. Never an execution permission. */
+  decision: Decision | null;
 }
 
 interface RunRow {
@@ -155,9 +157,10 @@ export function getRun(db: Db, runId: string): ResearchRunView {
     hostVerified: false,
     status: runStatus(assignments),
     assignments: assignments.map((a) => ({ assignmentId: a.id, role: a.role, phase: a.phase, state: a.state, completedAt: a.completed_at })),
-    reports: toReports(assignments),
+    // A report is shown only once its whole phase is closed, so independent roles cannot read each other's work through this view.
+    reports: toReports(assignments.filter((a) => !assignments.some((other) => other.phase === a.phase && other.state === "open"))),
     missingRoles: assignments.filter((a) => a.state === "failed").map((a) => a.role),
-    decision: null,
+    decision: run.decision === null ? null : (JSON.parse(run.decision) as Decision),
   };
 }
 
@@ -241,7 +244,13 @@ function advancePhase(db: Db, run: RunRow, at: string): void {
   const assignments = loadAssignments(db, run.id);
   const current = currentPhase(assignments);
   if (assignments.some((a) => a.phase === current && a.state === "open")) return;
-  if (current < 3) createAssignments(db, run.id, (current + 1) as ResearchPhase, at);
+  if (current < 3) {
+    createAssignments(db, run.id, (current + 1) as ResearchPhase, at);
+    return;
+  }
+  const decision = decide({ runId: run.id, bundle: bundleContent(db, run), reports: toReports(assignments), decidedAt: at });
+  db.prepare("UPDATE research_runs SET decision = ? WHERE id = ? AND decision IS NULL").run(JSON.stringify(decision), run.id);
+  appendAudit(db, at, "research.decided", run.id, { finalDecision: decision.finalDecision, draftCards: decision.draftCards.length });
 }
 
 function createAssignments(db: Db, runId: string, phase: ResearchPhase, at: string): void {
