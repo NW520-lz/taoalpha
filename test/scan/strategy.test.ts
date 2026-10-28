@@ -45,3 +45,7 @@ test("unreadable or malformed strategy files are INVALID_INPUT", () => {
   expectDomainError(() => loadStrategy(join(dir, "missing.json")), "INVALID_INPUT", { ruleId: "strategy.readable" });
   expectDomainError(() => loadStrategy(broken), "INVALID_INPUT", { ruleId: "strategy.json" });
 });
+
+test("products must not repeat", () => {
+  expectDomainError(() => parseStrategy({ ...base(), products: ["spot", "spot"] }, "x"), "INVALID_INPUT", { field: "products" });
+});

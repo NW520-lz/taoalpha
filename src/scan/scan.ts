@@ -165,7 +165,7 @@ export function screenSnapshot(snapshot: MarketSnapshot, screening: Screening, a
 
   return [
     { rule: "turnover_24h", pass: turnover !== null && turnover.gte(dec(screening.minTurnover24hUsdt)), actual: turnover?.toFixed() ?? null, threshold: `>= ${screening.minTurnover24hUsdt} USDT` },
-    { rule: "spread", pass: spread !== null && spread.lte(dec(screening.maxSpreadBps)), actual: spread ? round4(spread) : null, threshold: `<= ${screening.maxSpreadBps} bps` },
+    { rule: "spread", pass: spread !== null && spread.gte(0) && spread.lte(dec(screening.maxSpreadBps)), actual: spread ? round4(spread) : null, threshold: `<= ${screening.maxSpreadBps} bps` },
     { rule: "depth_per_side", pass: thinnestSide !== null && thinnestSide.gte(dec(screening.minDepthUsdtPerSide)), actual: thinnestSide?.toFixed() ?? null, threshold: `>= ${screening.minDepthUsdtPerSide} USDT per side` },
     { rule: "listing_age", pass: listedDays !== null && listedDays >= screening.minListingDays, actual: listedDays === null ? null : String(listedDays), threshold: `>= ${screening.minListingDays} days` },
     { rule: "data_complete", pass: snapshot.gaps.length === 0, actual: snapshot.gaps.length === 0 ? "no gaps" : snapshot.gaps.join(","), threshold: "no gaps" },
@@ -241,7 +241,10 @@ function oldestExchangeTs(snapshot: MarketSnapshot): string | null {
     const d = snapshot.derivatives;
     groups.push(d.funding, d.openInterest, d.markPx, d.indexPx);
   }
-  const times = groups.flatMap((group) => (group?.exchangeTs ? [group.exchangeTs] : []));
+  const present = groups.filter((group) => group !== null);
+  // A present group with an unparseable exchange time cannot be proven fresh, so the whole snapshot is undated.
+  if (present.some((group) => group.exchangeTs === null)) return null;
+  const times = present.flatMap((group) => (group.exchangeTs ? [group.exchangeTs] : []));
   // ISO-8601 UTC strings from toISOString sort chronologically.
   return times.length === 0 ? null : ([...times].sort()[0] ?? null);
 }

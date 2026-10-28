@@ -4,7 +4,7 @@ import { openDb } from "../../src/store/db.ts";
 import { getBundle, getEvidence } from "../../src/store/evidence-store.ts";
 import { hashJson } from "../../src/lib/hash.ts";
 import { runScan, screenSnapshot, type ScanCandidate } from "../../src/scan/scan.ts";
-import { buildSnapshot } from "../../src/market/snapshot.ts";
+import { buildSnapshot, type OkxBookRow, type OkxTickerRow } from "../../src/market/snapshot.ts";
 import type { Instrument } from "../../src/market/instruments.ts";
 import type { MarketSnapshot } from "../../src/market/snapshot.ts";
 import { createFakeClient } from "../helpers/fake-okx.ts";
@@ -129,11 +129,27 @@ const GOOD_SPOT: Instrument = {
 };
 const SCREENING = { minTurnover24hUsdt: "5000000", maxSpreadBps: "10", minDepthUsdtPerSide: "20000", minListingDays: 30, maxDataAgeMs: 120000 };
 
-function snapshotWithTickerTs(ts: string, instrument: Instrument = GOOD_SPOT): MarketSnapshot {
-  return buildSnapshot("global", instrument, {
-    ticker: { row: { instId: "GOOD-USDT", last: "10", bidPx: "9.999", askPx: "10.001", open24h: "9", high24h: "10.5", low24h: "8.9", vol24h: "0", volCcy24h: "10000000", ts }, receivedAt: NOW.toISOString(), rawRef: "raw_t" },
-    book: { row: { asks: [["10", "5000", "0", "1"]], bids: [["10", "5000", "0", "1"]], ts: FRESH_TS }, receivedAt: NOW.toISOString(), rawRef: "raw_b" },
+interface SnapshotOverrides {
+  ticker?: Partial<OkxTickerRow>;
+  book?: Partial<OkxBookRow>;
+  instrument?: Instrument;
+}
+
+function snapshotWith(overrides: SnapshotOverrides = {}): MarketSnapshot {
+  const ticker: OkxTickerRow = { instId: "GOOD-USDT", last: "10", bidPx: "9.999", askPx: "10.001", open24h: "9", high24h: "10.5", low24h: "8.9", vol24h: "0", volCcy24h: "10000000", ts: FRESH_TS, ...overrides.ticker };
+  const book: OkxBookRow = { asks: [["10", "5000", "0", "1"]], bids: [["10", "5000", "0", "1"]], ts: FRESH_TS, ...overrides.book };
+  return buildSnapshot("global", overrides.instrument ?? GOOD_SPOT, {
+    ticker: { row: ticker, receivedAt: NOW.toISOString(), rawRef: "raw_t" },
+    book: { row: book, receivedAt: NOW.toISOString(), rawRef: "raw_b" },
   }, 5);
+}
+
+function snapshotWithTickerTs(ts: string, instrument: Instrument = GOOD_SPOT): MarketSnapshot {
+  return snapshotWith({ ticker: { ts }, instrument });
+}
+
+function check(snapshot: MarketSnapshot, rule: string) {
+  return screenSnapshot(snapshot, SCREENING, NOW).find((c) => c.rule === rule);
 }
 
 test("data freshness passes at exactly maxDataAgeMs and fails one millisecond later", () => {
@@ -148,4 +164,59 @@ test("listing age below the minimum fails, and an unknown listing time fails", (
   const unknown = { ...GOOD_SPOT, listTime: null };
   assert.deepEqual(screenSnapshot(snapshotWithTickerTs(FRESH_TS, recent), SCREENING, NOW).find((c) => c.rule === "listing_age"), { rule: "listing_age", pass: false, actual: "29", threshold: ">= 30 days" });
   assert.deepEqual(screenSnapshot(snapshotWithTickerTs(FRESH_TS, unknown), SCREENING, NOW).find((c) => c.rule === "listing_age"), { rule: "listing_age", pass: false, actual: null, threshold: ">= 30 days" });
+});
+
+test("a group without a parseable exchange time fails freshness", () => {
+  assert.deepEqual(check(snapshotWith({ ticker: { ts: "" } }), "data_fresh"), { rule: "data_fresh", pass: false, actual: null, threshold: "<= 120000 ms" });
+});
+
+test("depth is judged by the thinnest side", () => {
+  const snapshot = snapshotWith({ book: { bids: [["10", "5000", "0", "1"]], asks: [["10", "1000", "0", "1"]] } });
+  assert.deepEqual(check(snapshot, "depth_per_side"), { rule: "depth_per_side", pass: false, actual: "10000", threshold: ">= 20000 USDT per side" });
+});
+
+test("thresholds pass exactly at the limit", () => {
+  const snapshot = snapshotWith({
+    ticker: { bidPx: "9995", askPx: "10005", last: "10000", open24h: "10000", volCcy24h: "5000000" },
+    book: { bids: [["10", "2000", "0", "1"]], asks: [["10", "2000", "0", "1"]] },
+    instrument: { ...GOOD_SPOT, listTime: "2026-09-28T12:00:00.000Z" }, // exactly 30 days before NOW
+  });
+  assert.deepEqual(check(snapshot, "spread"), { rule: "spread", pass: true, actual: "10", threshold: "<= 10 bps" });
+  assert.equal(check(snapshot, "turnover_24h")?.pass, true);
+  assert.equal(check(snapshot, "depth_per_side")?.pass, true);
+  assert.deepEqual(check(snapshot, "listing_age"), { rule: "listing_age", pass: true, actual: "30", threshold: ">= 30 days" });
+});
+
+test("comparisons use full precision, not the rounded display", () => {
+  const wide = snapshotWith({ ticker: { bidPx: "9994.99998", askPx: "10005.00002" } }); // 10.00004 bps, displays as 10
+  assert.deepEqual(check(wide, "spread"), { rule: "spread", pass: false, actual: "10", threshold: "<= 10 bps" });
+  assert.equal(check(snapshotWith({ ticker: { volCcy24h: "4999999.99999" } }), "turnover_24h")?.pass, false);
+});
+
+test("a crossed book fails the spread check", () => {
+  assert.equal(check(snapshotWith({ ticker: { bidPx: "10.001", askPx: "9.999" } }), "spread")?.pass, false);
+});
+
+test("live instruments without a usable ticker are counted as missingTicker", async () => {
+  const db = openDb(":memory:");
+  const routes = marketRoutes();
+  const spot = routes["/api/v5/public/instruments?instType=SPOT"];
+  assert.ok(spot && "rows" in spot);
+  const template = spot.rows[0] as Record<string, unknown>;
+  spot.rows.push({ ...template, instId: "NOTICK-USDT", baseCcy: "NOTICK", quoteCcy: "USDT" });
+  const { client } = createFakeClient(routes);
+  const result = await runScan(db, client, testStrategy({ products: ["spot"] }), now);
+  assert.deepEqual(result.products, [{ product: "spot", status: "ok", liveInstruments: 3, missingTicker: 1, shortlisted: 2 }]);
+  assert.ok(!result.candidates.some((c) => c.instId === "NOTICK-USDT"));
+});
+
+test("a failed instruments request marks the product unavailable", async () => {
+  const db = openDb(":memory:");
+  const routes = marketRoutes();
+  routes["/api/v5/public/instruments?instType=SPOT"] = { error: { kind: "http", status: 503 } };
+  const { client } = createFakeClient(routes);
+  const result = await runScan(db, client, testStrategy({ products: ["spot"] }), now);
+  assert.deepEqual(result.products, [{ product: "spot", status: "unavailable", liveInstruments: 0, missingTicker: 0, shortlisted: 0 }]);
+  assert.deepEqual(result.candidates, []);
+  assert.ok(result.sourceErrors.some((e) => e.endpoint === "/api/v5/public/instruments?instType=SPOT"));
 });

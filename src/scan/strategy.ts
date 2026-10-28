@@ -22,7 +22,10 @@ export const strategySchema = z
     description: z.string(),
     // M0 has no validation pipeline, so "unvalidated" is the only representable state.
     validation: z.object({ state: z.literal("unvalidated") }).strict(),
-    products: z.array(z.enum(["spot", "usdt_perpetual"])).min(1),
+    products: z
+      .array(z.enum(["spot", "usdt_perpetual"]))
+      .min(1)
+      .refine((list) => new Set(list).size === list.length, "products must not repeat"),
     shortlistPerProduct: z.number().int().min(1).max(100),
     depthLevels: z.number().int().min(1).max(400),
     // null: no executability thresholds; scan output is a factual ranking only.
