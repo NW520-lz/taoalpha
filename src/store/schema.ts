@@ -50,4 +50,24 @@ export const SCHEMA: string[] = [
     BEGIN SELECT RAISE(ABORT, 'audit events are append-only'); END`,
   `CREATE TRIGGER IF NOT EXISTS audit_events_no_delete BEFORE DELETE ON audit_events
     BEGIN SELECT RAISE(ABORT, 'audit events are append-only'); END`,
+  `CREATE TABLE IF NOT EXISTS research_runs (
+    id TEXT PRIMARY KEY,
+    bundle_id TEXT NOT NULL REFERENCES evidence_bundles(id),
+    bundle_sha256 TEXT NOT NULL,
+    agent_mode TEXT NOT NULL CHECK (agent_mode IN ('parallel_independent', 'serial_degraded')),
+    created_at TEXT NOT NULL,
+    decision TEXT
+  )`,
+  `CREATE TABLE IF NOT EXISTS research_assignments (
+    id TEXT PRIMARY KEY,
+    run_id TEXT NOT NULL REFERENCES research_runs(id),
+    role TEXT NOT NULL,
+    phase INTEGER NOT NULL CHECK (phase IN (1, 2, 3)),
+    state TEXT NOT NULL CHECK (state IN ('open', 'completed', 'failed')),
+    created_at TEXT NOT NULL,
+    completed_at TEXT,
+    outcome TEXT,
+    submitted_sha256 TEXT,
+    UNIQUE (run_id, role)
+  )`,
 ];
