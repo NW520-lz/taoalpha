@@ -43,7 +43,8 @@ export interface PublicClientOptions {
   now?: () => Date;
 }
 
-const READ_ONLY_PREFIXES = ["/api/v5/public/", "/api/v5/market/"];
+/** Plain path segments only (letters, digits, hyphen): no dots, percent-encoding, query, fragment or backslashes can slip through. */
+const READ_ONLY_PATH = /^\/api\/v5\/(public|market)\/[a-z0-9-]+(\/[a-z0-9-]+)*$/i;
 
 export function createPublicClient(options: PublicClientOptions = {}): PublicClient {
   const site = options.site ?? "global";
@@ -53,10 +54,7 @@ export function createPublicClient(options: PublicClientOptions = {}): PublicCli
   const now = options.now ?? (() => new Date());
 
   async function get<T>(path: string, query: Record<string, string>): Promise<PublicResult<T>> {
-    // Compare the path as the URL parser normalizes it, so dot segments, encoded dot segments,
-    // query strings and fragments cannot slip past the prefix check and resolve elsewhere.
-    const normalized = new URL(path, baseUrl).pathname;
-    if (normalized !== path || !READ_ONLY_PREFIXES.some((prefix) => normalized.startsWith(prefix))) {
+    if (!READ_ONLY_PATH.test(path)) {
       throw new Error(`public client only reads /api/v5/public and /api/v5/market, got ${path}`);
     }
     const endpoint = `${path}?${new URLSearchParams(query).toString()}`;

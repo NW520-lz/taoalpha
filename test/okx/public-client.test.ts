@@ -73,6 +73,7 @@ test("refuses any path outside the read-only public and market APIs", async () =
   await assert.rejects(client.get("/api/v5/account/balance", {}), /only reads/);
   await assert.rejects(client.get("/api/v5/market/../trade/order", {}), /only reads/);
   await assert.rejects(client.get("/api/v5/market/%2e%2e/trade/order", {}), /only reads/);
+  await assert.rejects(client.get("/api/v5/market/..%2Ftrade/order", {}), /only reads/);
   await assert.rejects(client.get("/api/v5/market/ticker?instId=BTC-USDT", {}), /only reads/);
   assert.deepEqual(calls, []);
 });
