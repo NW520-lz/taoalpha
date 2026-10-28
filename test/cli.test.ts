@@ -104,6 +104,8 @@ test("A02/A03: a full research flow ends in non-executable draft cards with zero
   assert.equal(view.decision?.finalDecision, "trade_candidate");
   assert.ok(view.decision?.draftCards.every((c) => c.executable === false));
   assert.match(final.summaryZh, /不可执行/);
+  assert.match(final.summaryZh, /策略未验证/);
+  assert.ok(calls.length > 0);
   assert.ok(calls.every((endpoint) => endpoint.startsWith("/api/v5/public/") || endpoint.startsWith("/api/v5/market/")));
 });
 
@@ -130,12 +132,27 @@ test("submit rejects ambiguous flags and unreadable or malformed report files", 
   const run = await call<ResearchRunView>(deps, "research", "start", "--bundle", scan.bundleId, "--agent-mode", "serial_degraded");
   const [task] = await call<ResearchTask[]>(deps, "research", "tasks", run.runId);
   assert.ok(task);
+  const validFile = writeJson(dir, "valid.json", {});
   const malformed = join(dir, "malformed.json");
   writeFileSync(malformed, "{ nope");
-  const both = await runCli(["research", "submit", task.assignmentId, "--file", malformed, "--failed", "x"], deps);
-  assert.equal(both.error?.code, "INVALID_INPUT");
+  const both = await runCli(["research", "submit", task.assignmentId, "--file", validFile, "--failed", "x"], deps);
+  assert.deepEqual(both.error?.violations, [{ ruleId: "cli.usage" }]);
+  const neither = await runCli(["research", "submit", task.assignmentId], deps);
+  assert.deepEqual(neither.error?.violations, [{ ruleId: "cli.usage" }]);
+  const noAssignment = await runCli(["research", "submit", "--failed", "x"], deps);
+  assert.deepEqual(noAssignment.error?.violations, [{ ruleId: "cli.usage" }]);
   const bad = await runCli(["research", "submit", task.assignmentId, "--file", malformed], deps);
   assert.deepEqual(bad.error?.violations, [{ ruleId: "cli.file_json", field: "file" }]);
   const missing = await runCli(["research", "submit", task.assignmentId, "--file", join(dir, "missing.json")], deps);
   assert.deepEqual(missing.error?.violations, [{ ruleId: "cli.file_readable", field: "file" }]);
+});
+
+test("bundle --top must be a positive integer", async () => {
+  const { deps } = setup();
+  const scan = await call<ScanResult>(deps, "scan");
+  for (const top of ["0", "abc"]) {
+    const envelope = await runCli(["bundle", scan.bundleId, "--top", top], deps);
+    assert.equal(envelope.ok, false);
+    assert.deepEqual(envelope.error?.violations, [{ ruleId: "cli.usage" }]);
+  }
 });

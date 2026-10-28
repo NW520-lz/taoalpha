@@ -233,6 +233,7 @@ function runSummary(view: ResearchRunView): string {
   const decision = view.decision;
   if (decision) {
     lines.push(`最终结论：${decision.finalDecision}（主控：${decision.synthesisDecision}）${decision.downgradeReason ? `；降级原因：${decision.downgradeReason}` : ""}`);
+    lines.push("策略未验证；M0 只输出研究结论与不可执行草案卡，不会下单。");
     for (const card of decision.draftCards) {
       lines.push(`- 草案卡 ${card.draftId} ${card.instId} ${card.direction}：不可执行；阻断：${[...card.hardBlockers, ...card.readinessBlockers].join(", ")}`);
     }

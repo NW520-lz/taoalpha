@@ -2,17 +2,20 @@
 
 M0 只使用 OKX 公共行情，不读取账户、不需要任何凭证，也不会向交易所写入。研究的产出最多是**不可执行**的草案卡；策略尚未经过历史验证，模拟与实盘均未实现。
 
-所有命令在仓库根目录运行，输出是一个 JSON 信封：`ok`、`value` 或 `error`，以及中文摘要 `summaryZh`。数据库默认位于 `data/taoalpha.db`，可用环境变量 `TAOALPHA_DB` 指定其他路径。
+所有命令在仓库根目录运行，输出是一个 JSON 信封：`ok`、`value` 或 `error`，以及中文摘要 `summaryZh`。失败时输出 ok:false 的信封（含错误码与违规项），进程退出码为 1。数据库默认位于 `data/taoalpha.db`，可用环境变量 `TAOALPHA_DB` 指定其他路径。
 
 ## 1. 查看状态并扫描
 
     npm run okx -- status
     npm run okx -- scan                       # 默认策略：config/strategies/volume-flow.example.json
     npm run okx -- bundle <bundleId> --top 10 # 查看候选与行情快照证据
+    npm run okx -- evidence <evidenceId>   # 查看单条证据（快照或外部来源）
 
 - 扫描结果只是研究候选，不是买卖信号。
+- 扫描可用 `--strategy <path>` 指定其他策略文件。
 - `screening` 为 `not_configured` 时，结果只是事实排名，未经可执行性筛选。
 - `sourceErrors` 非空表示数据源失败；失败不等于“没有风险”或“没有事件”。
+- bundle --top N 只显示前 N 个候选；主控综合仍可选择证据包中的任何候选，需要时去掉 --top 查看全部。
 
 ## 2. 启动研究，如实声明运行方式
 
