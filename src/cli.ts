@@ -80,6 +80,7 @@ async function dispatch(argv: string[], deps: CliDeps): Promise<Output> {
   const [command, ...rest] = argv;
   switch (command) {
     case "status":
+      if (rest.length !== 0) throw usageError("status does not accept arguments");
       return status(deps);
     case "scan":
       return scan(rest, deps);
@@ -119,7 +120,8 @@ function status(deps: CliDeps): Output {
 }
 
 async function scan(args: string[], deps: CliDeps): Promise<Output> {
-  const { values } = parse(args, { strategy: { type: "string" } });
+  const { values, positionals } = parse(args, { strategy: { type: "string" } });
+  if (positionals.length !== 0) throw usageError("scan does not accept positional arguments");
   const strategy = loadStrategy(stringOption(values, "strategy") ?? deps.defaultStrategyPath);
   const result = await runScan(deps.db, deps.client, strategy, deps.now);
   return { value: result, summaryZh: scanSummary(result) };
@@ -128,7 +130,7 @@ async function scan(args: string[], deps: CliDeps): Promise<Output> {
 function bundle(args: string[], deps: CliDeps): Output {
   const { values, positionals } = parse(args, { top: { type: "string" } });
   const id = positionals[0];
-  if (!id) throw usageError("bundle requires <bundleId>");
+  if (positionals.length !== 1 || !id) throw usageError("bundle requires exactly one <bundleId>");
   const stored = getBundle(deps.db, id);
   if (!stored) throw new DomainError("INVALID_INPUT", `unknown evidence bundle ${id}`, [{ ruleId: "bundle.exists", field: "bundleId" }]);
   const content = stored.content as ScanContent;
@@ -144,7 +146,7 @@ function bundle(args: string[], deps: CliDeps): Output {
 function evidence(args: string[], deps: CliDeps): Output {
   const { positionals } = parse(args, {});
   const id = positionals[0];
-  if (!id) throw usageError("evidence requires <evidenceId>");
+  if (positionals.length !== 1 || !id) throw usageError("evidence requires exactly one <evidenceId>");
   const item = getEvidence(deps.db, id);
   if (!item) throw new DomainError("INVALID_INPUT", `unknown evidence ${id}`, [{ ruleId: "evidence.exists", field: "evidenceId" }]);
   return { value: item, summaryZh: `证据 ${item.id}（${item.kind}，${item.label}）来源：${item.source}` };
@@ -154,16 +156,17 @@ async function research(args: string[], deps: CliDeps): Promise<Output> {
   const [sub, ...rest] = args;
   switch (sub) {
     case "start": {
-      const { values } = parse(rest, { bundle: { type: "string" }, "agent-mode": { type: "string" } });
+      const { values, positionals } = parse(rest, { bundle: { type: "string" }, "agent-mode": { type: "string" } });
       const bundleId = stringOption(values, "bundle");
       const agentMode = stringOption(values, "agent-mode");
-      if (!bundleId || !agentMode) throw usageError("research start requires --bundle and --agent-mode");
+      if (!bundleId || !agentMode || positionals.length !== 0) throw usageError("research start requires --bundle and --agent-mode, without positional arguments");
       const view = startResearch(deps.db, { bundleId, agentMode: agentMode as AgentMode }, deps.now);
       return { value: view, summaryZh: runSummary(view) };
     }
     case "tasks": {
-      const runId = parse(rest, {}).positionals[0];
-      if (!runId) throw usageError("research tasks requires <runId>");
+      const { positionals } = parse(rest, {});
+      const runId = positionals[0];
+      if (positionals.length !== 1 || !runId) throw usageError("research tasks requires exactly one <runId>");
       const tasks = nextTasks(deps.db, runId);
       return { value: tasks, summaryZh: tasksSummary(tasks) };
     }
@@ -172,16 +175,17 @@ async function research(args: string[], deps: CliDeps): Promise<Output> {
       const assignmentId = positionals[0];
       const file = stringOption(values, "file");
       const failed = stringOption(values, "failed");
-      if (!assignmentId || (file === undefined) === (failed === undefined)) {
-        throw usageError("research submit requires <assignmentId> and exactly one of --file or --failed");
+      if (positionals.length !== 1 || !assignmentId || (file === undefined) === (failed === undefined)) {
+        throw usageError("research submit requires exactly one <assignmentId> and one of --file or --failed");
       }
       const outcome: SubmittedOutcome = file !== undefined ? { kind: "report", report: readJson(file) } : { kind: "failed", reason: failed ?? "" };
       const view = completeTask(deps.db, { assignmentId, outcome }, deps.now);
       return { value: view, summaryZh: runSummary(view) };
     }
     case "get": {
-      const runId = parse(rest, {}).positionals[0];
-      if (!runId) throw usageError("research get requires <runId>");
+      const { positionals } = parse(rest, {});
+      const runId = positionals[0];
+      if (positionals.length !== 1 || !runId) throw usageError("research get requires exactly one <runId>");
       const view = getRun(deps.db, runId);
       return { value: view, summaryZh: runSummary(view) };
     }

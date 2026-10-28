@@ -58,9 +58,17 @@ test("status reports M0 read-only mode with no account, simulation or live tradi
   assert.match(envelope.summaryZh, /M0 只读研究/);
 });
 
-test("unknown commands and bad flags are INVALID_INPUT envelopes with usage", async () => {
+test("unknown commands, bad flags and surplus arguments are INVALID_INPUT envelopes with usage", async () => {
   const { deps } = setup();
-  for (const argv of [["trade"], [], ["scan", "--bogus"], ["research", "dance"]]) {
+  for (const argv of [
+    ["trade"], [], ["scan", "--bogus"], ["research", "dance"],
+    ["status", "--bogus"], ["status", "extra"], ["scan", "extra"],
+    ["bundle", "bundle_1", "extra"], ["evidence", "ev_1", "extra"],
+    ["research", "start", "--bundle", "bundle_1", "--agent-mode", "serial_degraded", "extra"],
+    ["research", "tasks", "run_1", "extra"],
+    ["research", "submit", "asg_1", "extra", "--failed", "cannot run"],
+    ["research", "get", "run_1", "extra"],
+  ]) {
     const envelope = await runCli(argv, deps);
     assert.equal(envelope.ok, false);
     assert.equal(envelope.error?.code, "INVALID_INPUT");
