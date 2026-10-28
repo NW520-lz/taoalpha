@@ -1,0 +1,29 @@
+# Private local planning and account material
+.scratch/
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+
+# Runtime state and generated output
+*.db
+*.db-*
+*.sqlite
+*.sqlite-*
+*.sqlite3
+*.sqlite3-*
+logs/
+coverage/
+dist/
+build/
+node_modules/
+.cache/
+
+# Editor and operating system
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
