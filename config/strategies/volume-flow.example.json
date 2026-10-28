@@ -1,0 +1,16 @@
+{
+  "id": "volume-flow",
+  "version": 1,
+  "description": "量价与资金变化驱动的研究入口（草案示例）。阈值是待验证的初始假设，不是已验证的盈利规则；使用前请自行确认。",
+  "validation": { "state": "unvalidated" },
+  "products": ["spot", "usdt_perpetual"],
+  "shortlistPerProduct": 30,
+  "depthLevels": 5,
+  "screening": {
+    "minTurnover24hUsdt": "5000000",
+    "maxSpreadBps": "10",
+    "minDepthUsdtPerSide": "20000",
+    "minListingDays": 30,
+    "maxDataAgeMs": 120000
+  }
+}
