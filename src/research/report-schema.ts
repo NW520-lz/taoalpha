@@ -130,6 +130,9 @@ const synthesis = z
       ctx.addIssue({ code: "custom", path: ["candidates"], message: "only trade_candidate may list candidates" });
     }
     report.candidates.forEach((candidate, i) => {
+      if (report.candidates.findIndex((c) => c.instId === candidate.instId && c.product === candidate.product) !== i) {
+        ctx.addIssue({ code: "custom", path: ["candidates", i], message: "duplicate candidate" });
+      }
       if (candidate.product === "spot" && candidate.direction === "short") {
         ctx.addIssue({ code: "custom", path: ["candidates", i, "direction"], message: "spot candidates cannot be short" });
       }

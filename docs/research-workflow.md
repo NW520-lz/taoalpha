@@ -2,14 +2,14 @@
 
 M0 只使用 OKX 公共行情，不读取账户、不需要任何凭证，也不会向交易所写入。研究的产出最多是**不可执行**的草案卡；策略尚未经过历史验证，模拟与实盘均未实现。
 
-所有命令在仓库根目录运行，输出是一个 JSON 信封：`ok`、`value` 或 `error`，以及中文摘要 `summaryZh`。失败时输出 ok:false 的信封（含错误码与违规项），进程退出码为 1。数据库默认位于 `data/taoalpha.db`，可用环境变量 `TAOALPHA_DB` 指定其他路径。
+所有命令在仓库根目录运行，输出是一个 JSON 信封：`ok`、`value` 或 `error`，以及中文摘要 `summaryZh`。业务错误（DomainError）输出 ok:false 的信封（含错误码与违规项），进程退出码为 1；数据库繁忙、文件系统等意外错误会直接抛出堆栈并以非零码退出，不输出信封。用 -s 抑制 npm 自身的提示行，使标准输出只含 JSON。数据库默认位于 `data/taoalpha.db`，可用环境变量 `TAOALPHA_DB` 指定其他路径。
 
 ## 1. 查看状态并扫描
 
-    npm run okx -- status
-    npm run okx -- scan                       # 默认策略：config/strategies/volume-flow.example.json
-    npm run okx -- bundle <bundleId> --top 10 # 查看候选与行情快照证据
-    npm run okx -- evidence <evidenceId>   # 查看单条证据（快照或外部来源）
+    npm run -s okx -- status
+    npm run -s okx -- scan                       # 默认策略：config/strategies/volume-flow.example.json
+    npm run -s okx -- bundle <bundleId> --top 10 # 查看候选与行情快照证据
+    npm run -s okx -- evidence <evidenceId>   # 查看单条证据（快照或外部来源）
 
 - 扫描结果只是研究候选，不是买卖信号。
 - 扫描可用 `--strategy <path>` 指定其他策略文件。
@@ -19,30 +19,30 @@ M0 只使用 OKX 公共行情，不读取账户、不需要任何凭证，也不
 
 ## 2. 启动研究，如实声明运行方式
 
-    npm run okx -- research start --bundle <bundleId> --agent-mode parallel_independent
+    npm run -s okx -- research start --bundle <bundleId> --agent-mode parallel_independent
 
 只有宿主真的为三个第一阶段角色分别启动了互不可见的子 Agent，才使用 `parallel_independent`；否则使用 `serial_degraded`。后端无法核验这一点，因此始终记录 `hostVerified: false`。
 
 ## 3. 按阶段拉取并完成任务
 
-    npm run okx -- research tasks <runId>
+    npm run -s okx -- research tasks <runId>
 
 每个任务包含角色说明 `brief`、通用规则 `rules`、证据包引用 `bundle`，第二、三阶段还包含前序报告 `priorReports`。
 
 - **第一阶段**（市场结构、基本面与事件、量化检验）：为每个任务启动一个独立子 Agent，只交给它该任务的 JSON 和 `bundle` 命令的输出，不要传入其他角色的结论。
 - 子 Agent 按下文 schema 写出 JSON 报告文件后提交：
 
-      npm run okx -- research submit <assignmentId> --file report.json
+      npm run -s okx -- research submit <assignmentId> --file report.json
 
 - 角色无法运行时如实提交失败（它会记为缺失角色，而不是“同意”）：
 
-      npm run okx -- research submit <assignmentId> --failed "原因"
+      npm run -s okx -- research submit <assignmentId> --failed "原因"
 
 - 三个独立任务都结束后，反方任务才会出现；反方结束后，主控综合任务才会出现。
 
 ## 4. 读取结论
 
-    npm run okx -- research get <runId>
+    npm run -s okx -- research get <runId>
 
 `finalDecision` 为 `trade_candidate`、`wait` 或 `skip`。草案卡始终是 `executable: false`，并列出：
 

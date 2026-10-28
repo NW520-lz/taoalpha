@@ -42,6 +42,7 @@ export function decide(input: {
   const missingRoles = reports.filter((r) => r.outcome.kind === "failed").map((r) => r.role);
   // The role ties each report to its schema, so these casts follow from the role lookup.
   const synthesis = reportOf(reports, "synthesis") as SynthesisReport | null;
+  const synthesisStored = reports.find((r) => r.role === "synthesis")?.outcome;
   if (!synthesis) {
     return { synthesisDecision: "unavailable", finalDecision: "wait", downgradeReason: "主控综合未完成，无法形成结论", waitConditions: [], missingRoles, draftCards: [], decidedAt };
   }
@@ -49,6 +50,8 @@ export function decide(input: {
     return { synthesisDecision: synthesis.decision, finalDecision: synthesis.decision, downgradeReason: null, waitConditions: synthesis.waitConditions, missingRoles, draftCards: [], decidedAt };
   }
 
+  // A candidate may cite its own report's source keys (src1); cards carry the saved evidence ids instead.
+  const sourceEvidenceIds = synthesisStored?.kind === "report" ? synthesisStored.sourceEvidenceIds : {};
   const objections = (reportOf(reports, "adversary") as AdversaryReport | null)?.objections ?? [];
   const responses = new Map(synthesis.objectionResponses.map((r) => [r.objectionId, r.response]));
   const draftCards: DraftCard[] = synthesis.candidates.map((candidate, index) => {
@@ -62,7 +65,7 @@ export function decide(input: {
       thesis: candidate.thesis,
       entryIdea: candidate.entryIdea,
       invalidation: candidate.invalidation,
-      evidenceRefs: candidate.evidenceRefs,
+      evidenceRefs: candidate.evidenceRefs.map((ref) => (Object.hasOwn(sourceEvidenceIds, ref) ? sourceEvidenceIds[ref] : ref)),
       executable: false,
       hardBlockers: [
         ...screeningBlockers(bundle, candidate.instId, candidate.product),

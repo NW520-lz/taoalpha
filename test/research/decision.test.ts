@@ -26,7 +26,12 @@ function bundle(screening: "applied" | "not_configured", candidates?: ScanCandid
   };
 }
 
-function reports(opts: { synthesis: unknown; adversary?: unknown; failed?: ResearchRole[] }): Array<{ role: ResearchRole; outcome: StoredOutcome }> {
+function reports(opts: {
+  synthesis: unknown;
+  adversary?: unknown;
+  failed?: ResearchRole[];
+  synthesisSourceEvidenceIds?: Record<string, string>;
+}): Array<{ role: ResearchRole; outcome: StoredOutcome }> {
   const raw: Record<ResearchRole, unknown> = {
     market_structure: marketStructureReport(REF),
     fundamentals_events: fundamentalsReport(REF),
@@ -38,7 +43,7 @@ function reports(opts: { synthesis: unknown; adversary?: unknown; failed?: Resea
     role,
     outcome: opts.failed?.includes(role)
       ? { kind: "failed", reason: "宿主未运行该角色" }
-      : { kind: "report", report: parseReport(role, raw[role]), sourceEvidenceIds: {} },
+      : { kind: "report", report: parseReport(role, raw[role]), sourceEvidenceIds: (role === "synthesis" ? opts.synthesisSourceEvidenceIds : undefined) ?? {} },
   }));
 }
 
@@ -132,4 +137,37 @@ test("a failed synthesis means no conclusion: wait, no cards", () => {
   assert.equal(result.synthesisDecision, "unavailable");
   assert.equal(result.finalDecision, "wait");
   assert.deepEqual(result.draftCards, []);
+});
+
+test("a blocking objection targeting the candidate's own instId blocks it", () => {
+  const result = decide({
+    runId: "run_1",
+    bundle: bundle("applied"),
+    reports: reports({ synthesis: synthesisReport(REF), adversary: adversaryReport(REF, { blocking: true, target: "GOOD-USDT" }) }),
+    decidedAt: DECIDED_AT,
+  });
+  assert.equal(result.finalDecision, "wait");
+  assert.deepEqual(result.draftCards[0]?.hardBlockers, ["UNRESOLVED_OBJECTION:obj1"]);
+});
+
+test("a failed adversary is a hard blocker", () => {
+  const result = decide({ runId: "run_1", bundle: bundle("applied"), reports: reports({ synthesis: synthesisReport(REF), failed: ["adversary"] }), decidedAt: DECIDED_AT });
+  assert.equal(result.finalDecision, "wait");
+  assert.deepEqual(result.draftCards[0]?.hardBlockers, ["ROLE_MISSING:adversary"]);
+});
+
+test("draft card evidence refs resolve the synthesis's own source keys to evidence ids", () => {
+  const synthesis = {
+    ...synthesisReport("src1"),
+    sources: [{ key: "src1", url: "https://example.com/x", publishedAt: null, fetchedAt: "2026-10-28T11:00:00Z", label: "fact", instIds: ["GOOD-USDT"], excerpt: "e" }],
+  };
+  const result = decide({
+    runId: "run_1",
+    bundle: bundle("applied"),
+    reports: reports({ synthesis, synthesisSourceEvidenceIds: { src1: "ev_resolved" } }),
+    decidedAt: DECIDED_AT,
+  });
+  const refs = result.draftCards[0]?.evidenceRefs ?? [];
+  assert.ok(refs.includes("ev_resolved"));
+  assert.ok(!refs.includes("src1"));
 });

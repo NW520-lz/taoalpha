@@ -80,3 +80,10 @@ test("a linear USDT swap without ctVal is excluded", () => {
   ]);
   assert.deepEqual(parsed, []);
 });
+
+test("a linear USDT swap with a non-numeric ctVal is excluded", () => {
+  const parsed = parseInstruments([
+    row({ instId: "BTC-USDT-SWAP", instType: "SWAP", settleCcy: "USDT", ctType: "linear", ctVal: "abc", ctValCcy: "BTC" }),
+  ]);
+  assert.deepEqual(parsed, []);
+});

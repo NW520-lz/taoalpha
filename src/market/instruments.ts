@@ -1,3 +1,4 @@
+import { isDecimalString } from "../lib/decimal.ts";
 import { msToIso } from "../lib/time.ts";
 
 export type ProductType = "spot" | "usdt_perpetual";
@@ -54,7 +55,7 @@ export function parseInstruments(rows: OkxInstrumentRow[]): Instrument[] {
     };
     if (row.instType === "SPOT" && row.quoteCcy === "USDT") {
       instruments.push({ ...common, product: "spot", baseCcy: row.baseCcy, ctVal: null });
-    } else if (row.instType === "SWAP" && row.settleCcy === "USDT" && row.ctType === "linear" && row.ctVal !== "") {
+    } else if (row.instType === "SWAP" && row.settleCcy === "USDT" && row.ctType === "linear" && isDecimalString(row.ctVal)) {
       instruments.push({ ...common, product: "usdt_perpetual", baseCcy: row.ctValCcy, ctVal: row.ctVal });
     }
   }

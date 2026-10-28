@@ -211,3 +211,33 @@ test("a phase-1 role cannot cite a sibling's source", async () => {
   sneaky.claims.push({ statement: "引用兄弟角色的来源", label: "inference", evidenceRefs: [source.id] });
   expectDomainError(() => submit(db, run.runId, "market_structure", sneaky), "INVALID_INPUT", { ruleId: "research.evidence_ref_known" });
 });
+
+test("adversary objection targets must be 'overall' or a bundle candidate", async () => {
+  const { db, run, ref } = await setup();
+  completeIndependentPhase(db, run.runId, ref);
+  expectDomainError(
+    () => submit(db, run.runId, "adversary", adversaryReport(ref, { target: "GOOD" })),
+    "INVALID_INPUT",
+    { ruleId: "research.objection_target_known", field: "objections.0.target" },
+  );
+  submit(db, run.runId, "adversary", adversaryReport(ref, { target: "WIDE-USDT" }));
+});
+
+test("an adversary objection may target 'overall'", async () => {
+  const { db, run, ref } = await setup();
+  completeIndependentPhase(db, run.runId, ref);
+  const view = submit(db, run.runId, "adversary", adversaryReport(ref, { target: "overall" }));
+  assert.equal(view.status, "synthesis");
+});
+
+test("a synthesis cannot list the same candidate twice", async () => {
+  const { db, run, ref } = await setup();
+  completeIndependentPhase(db, run.runId, ref);
+  submit(db, run.runId, "adversary", adversaryReport(ref));
+  const goodSpotLong = { instId: "GOOD-USDT", product: "spot", direction: "long" } as const;
+  expectDomainError(
+    () => submit(db, run.runId, "synthesis", synthesisReport(ref, { candidates: [{ ...goodSpotLong }, { ...goodSpotLong }] })),
+    "INVALID_INPUT",
+    { field: "candidates.1" },
+  );
+});

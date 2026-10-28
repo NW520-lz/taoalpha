@@ -175,6 +175,7 @@ function toStoredOutcome(db: Db, run: RunRow, assignment: AssignmentRow, outcome
   const bundle = bundleContent(db, run);
   const prior = toReports(loadAssignments(db, run.id).filter((a) => a.phase < assignment.phase));
   checkEvidenceRefs(report, bundle, prior);
+  if (assignment.role === "adversary") checkAdversary(report as AdversaryReport, bundle);
   if (assignment.role === "synthesis") checkSynthesis(report as SynthesisReport, bundle, prior);
 
   const sourceEvidenceIds: Record<string, string> = {};
@@ -213,6 +214,16 @@ function checkEvidenceRefs(report: AgentReport, bundle: ScanContent, prior: Prio
       unknown.map((ref) => ({ ruleId: "research.evidence_ref_known", evidenceRef: ref })),
     );
   }
+}
+
+function checkAdversary(report: AdversaryReport, bundle: ScanContent): void {
+  report.objections.forEach((objection, i) => {
+    if (objection.target !== "overall" && !bundle.candidates.some((c) => c.instId === objection.target)) {
+      throw new DomainError("INVALID_INPUT", `objection ${objection.id} targets "${objection.target}", which is neither "overall" nor a bundle candidate`, [
+        { ruleId: "research.objection_target_known", field: `objections.${i}.target` },
+      ]);
+    }
+  });
 }
 
 function checkSynthesis(report: SynthesisReport, bundle: ScanContent, prior: PriorReport[]): void {
