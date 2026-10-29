@@ -1,13 +1,15 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { openDb } from '../../src/store/db.ts';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { createConfirmationService } from '../../src/control/confirmations.ts';
 import { createDemoRiskPolicyService } from '../../src/risk/demo-risk-policy.ts';
 
 const at = new Date('2026-10-29T12:00:00Z');
 const policy = { id:'policy:synthetic', version:1, initialEquityUsdt:'100', budgetsUsdt:{reserve:'20',spot:'30',perpetual:'50'}, lossLinesUsdt:{review:'1',pause:'2',stop:'3'}, limits:{maxSpotAssets:2,maxPerpetualPositions:1,maxSpotPlanLossUsdt:'1',maxPerpetualPlanLossUsdt:'2',maxPerpetualLeverage:'2'} };
-function setup() {
- const db = openDb(':memory:');
+function setup(db = openDb(':memory:')) {
  db.exec(`CREATE TABLE demo_account_scopes(scope_id TEXT PRIMARY KEY,account_ref TEXT,site TEXT,environment TEXT); INSERT INTO demo_account_scopes VALUES('scope:synthetic','account:synthetic','global','demo'); CREATE TABLE demo_account_identity_conflicts(scope_id TEXT PRIMARY KEY); CREATE TABLE demo_account_refresh_events(seq INTEGER PRIMARY KEY,scope_id TEXT,status TEXT); INSERT INTO demo_account_refresh_events VALUES(1,'scope:synthetic','ok');`);
  let snapshot: any = {scopeId:'scope:synthetic',accountRef:'account:synthetic',site:'global',environment:'demo',generation:1,validUntilMs:at.getTime()+30000,reconciled:false,executionAuthorized:false,blockNewRisk:true};
  const session = {getInternalSnapshot:()=>snapshot};
@@ -116,4 +118,62 @@ test('two service instances serialize conflicting versions; denied decisions can
   assert.throws(()=>third.confirm('proposal:denied','receipt:forged'));
   assert.equal(db.prepare('SELECT COUNT(*) n FROM confirmation_consumptions').get()!.n,1);
  } finally {db.close()}
+});
+
+test('budget sum is exact across maximum integer and fractional scale',()=>{
+ const {db,service}=setup(); try {
+  const large='999999999999999999999999999999999999999';
+  const tiny='0.0000000000000000000000000000000000001';
+  const p={...policy,initialEquityUsdt:large,budgetsUsdt:{reserve:large,spot:tiny,perpetual:'0'}};
+  assert.throws(()=>service.propose({proposalId:'proposal:precision-bad',policy:p,expiresAt:'2026-10-29T12:01:00Z'}));
+  const equal={...p,budgetsUsdt:{reserve:large,spot:'0',perpetual:'0'}};
+  assert.equal(service.propose({proposalId:'proposal:precision-equal',policy:equal,expiresAt:'2026-10-29T12:01:00Z'}).status,'pending');
+ } finally {db.close()}
+});
+
+
+
+test('expired receipt fails with otherwise current fresh account snapshot',async()=>{
+ const {db,service,confirmations,snapshot}=setup(); try {
+  const p=service.propose({proposalId:'proposal:expire-fresh',policy,expiresAt:'2026-10-29T12:00:01Z'});
+  const receipt=(await confirmations.reviewAndConfirm(p.requestId)).receiptId!;
+  const expired=createDemoRiskPolicyService(db,{getInternalSnapshot:()=>({...snapshot,validUntilMs:at.getTime()+30000})} as never,confirmations,()=>new Date(at.getTime()+1000));
+  assert.throws(()=>expired.confirm('proposal:expire-fresh',receipt));
+  assert.equal(confirmations.getRequest(p.requestId).status,'verified');
+  assert.equal(service.get('proposal:expire-fresh').status,'pending');
+ } finally {db.close()}
+});
+
+test('orphaned proposal is repaired by identical replay; corrupted frozen content is rejected',()=>{
+ const {db,service}=setup(); try {
+  const input={proposalId:'proposal:orphan',policy,expiresAt:'2026-10-29T12:01:00Z'};
+  db.exec("CREATE TRIGGER synthetic_insert_failure BEFORE INSERT ON demo_risk_policy_proposals BEGIN SELECT RAISE(ABORT,'private-sentinel'); END");
+  assert.throws(()=>service.propose(input));
+  assert.equal(db.prepare('SELECT COUNT(*) n FROM confirmation_requests').get()!.n,1);
+  assert.equal(db.prepare('SELECT COUNT(*) n FROM demo_risk_policy_proposals').get()!.n,0);
+  db.exec('DROP TRIGGER synthetic_insert_failure');
+  assert.equal(service.propose(input).status,'pending');
+  assert.throws(()=>service.propose({...input,policy:{...policy,version:2}}));
+  db.exec("DROP TRIGGER demo_risk_policy_proposals_no_update; UPDATE demo_risk_policy_proposals SET subject_hash='private-corruption-sentinel'");
+  assert.throws(()=>service.get(input.proposalId),(e:unknown)=>{assert.doesNotMatch(String(e)+JSON.stringify(e),/sentinel/);return true});
+ } finally {db.close()}
+});
+
+test('independent SQLite connections enforce write lock without consuming approval',async()=>{
+ const dir=mkdtempSync(join(tmpdir(),'tao-policy-')); const path=join(dir,'synthetic.sqlite');
+ const db=openDb(path); let db2:ReturnType<typeof openDb>|undefined;
+ try {
+  const {service,confirmations,snapshot}=setup(db);
+  const p=service.propose({proposalId:'proposal:independent',policy,expiresAt:'2026-10-29T12:01:00Z'});
+  const receipt=(await confirmations.reviewAndConfirm(p.requestId)).receiptId!;
+  db2=openDb(path); db2.exec('PRAGMA busy_timeout=0');
+  const confirmations2=createConfirmationService(db2,{reviewAndVerify:async()=>({status:'denied'})},()=>at);
+  const second=createDemoRiskPolicyService(db2,{getInternalSnapshot:()=>snapshot} as never,confirmations2,()=>at);
+  db.exec('BEGIN IMMEDIATE');
+  assert.throws(()=>second.confirm('proposal:independent',receipt));
+  db.exec('ROLLBACK');
+  assert.equal(confirmations.getRequest(p.requestId).status,'verified');
+  assert.equal(second.confirm('proposal:independent',receipt).status,'confirmed');
+  assert.equal(service.confirm('proposal:independent',receipt).status,'confirmed');
+ } finally {if(db.isTransaction) db.exec('ROLLBACK'); db2?.close(); db.close(); rmSync(dir,{recursive:true,force:true})}
 });

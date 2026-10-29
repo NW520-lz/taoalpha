@@ -8,6 +8,8 @@ import type { createConfirmationService } from '../control/confirmations.ts';
 import type { createDemoAccountSession } from '../account/demo-session.ts';
 
 const ref = z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/);
+// At most 40 characters per operand: 40 integer digits plus 38 fractional digits and a carry fit within 100 significant digits.
+const BudgetDecimal = Decimal.clone({ precision: 100 });
 const money = z.string().max(40).refine(v => isDecimalString(v) && dec(v).gte(0));
 const positive = money.refine(v => dec(v).gt(0));
 const count = z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER);
@@ -15,7 +17,7 @@ const policySchema = z.strictObject({id:ref,version:count.refine(v=>v>0),initial
  budgetsUsdt:z.strictObject({reserve:money,spot:money,perpetual:money}),
  lossLinesUsdt:z.strictObject({review:positive,pause:positive,stop:positive}),
  limits:z.strictObject({maxSpotAssets:count,maxPerpetualPositions:count,maxSpotPlanLossUsdt:money,maxPerpetualPlanLossUsdt:money,maxPerpetualLeverage:positive.refine(v=>dec(v).gte(1))})
-}).refine(p=>new Decimal(p.budgetsUsdt.reserve).plus(p.budgetsUsdt.spot).plus(p.budgetsUsdt.perpetual).lte(dec(p.initialEquityUsdt)) && dec(p.lossLinesUsdt.review).lt(dec(p.lossLinesUsdt.pause)) && dec(p.lossLinesUsdt.pause).lt(dec(p.lossLinesUsdt.stop)));
+}).refine(p=>new BudgetDecimal(p.budgetsUsdt.reserve).plus(p.budgetsUsdt.spot).plus(p.budgetsUsdt.perpetual).lte(new BudgetDecimal(p.initialEquityUsdt)) && dec(p.lossLinesUsdt.review).lt(dec(p.lossLinesUsdt.pause)) && dec(p.lossLinesUsdt.pause).lt(dec(p.lossLinesUsdt.stop)));
 const inputSchema = z.strictObject({proposalId:ref,policy:policySchema,expiresAt:z.iso.datetime({offset:true})});
 type Row = { id:string; request_id:string; subject_json:string; subject_hash:string; scope_id:string; account_ref:string; site:string; policy_id:string; version:number };
 type Snapshot = NonNullable<ReturnType<ReturnType<typeof createDemoAccountSession>['getInternalSnapshot']>>;
@@ -78,3 +80,4 @@ export function createDemoRiskPolicyService(db:Db, session:Pick<ReturnType<typeo
   get(proposalId:string) {return safe(()=>{if(arguments.length!==1 || !ref.safeParse(proposalId).success) fail(); return summary(load(proposalId))})}
  };
 }
+
