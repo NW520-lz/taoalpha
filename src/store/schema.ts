@@ -163,3 +163,10 @@ export const MIGRATION_1: string[] = [
   `CREATE TRIGGER IF NOT EXISTS method_records_no_update BEFORE UPDATE ON decision_method_records BEGIN SELECT RAISE(ABORT, 'method record immutable'); END`,
   `CREATE TRIGGER IF NOT EXISTS method_records_no_delete BEFORE DELETE ON decision_method_records BEGIN SELECT RAISE(ABORT, 'method record immutable'); END`,
 ];
+
+/** Migration 2: freeze the exact decision used by method records. */
+export const MIGRATION_2: string[] = [
+  `CREATE TABLE IF NOT EXISTS research_decision_seals (run_id TEXT PRIMARY KEY REFERENCES research_runs(id), decision_sha256 TEXT NOT NULL)`,
+  `CREATE TRIGGER IF NOT EXISTS decision_seals_no_update BEFORE UPDATE ON research_decision_seals BEGIN SELECT RAISE(ABORT, 'decision seal immutable'); END`,
+  `CREATE TRIGGER IF NOT EXISTS decision_seals_no_delete BEFORE DELETE ON research_decision_seals BEGIN SELECT RAISE(ABORT, 'decision seal immutable'); END`,
+];

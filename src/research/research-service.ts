@@ -157,6 +157,10 @@ export function getRun(db: Db, runId: string): ResearchRunView {
   const run = requireRun(db, runId);
   const assignments = loadAssignments(db, runId);
   const decision = run.decision === null ? null : JSON.parse(run.decision) as Decision;
+  if (decision && getMethodContext(db,runId)) {
+    const seal=getRow<{decision_sha256:string}>(db,"SELECT decision_sha256 FROM research_decision_seals WHERE run_id = ?",runId);
+    if (!seal || seal.decision_sha256 !== hashJson(decision)) throw new DomainError("INVALID_INPUT", "decision hash mismatch", [{ruleId:"research.decision_hash"}]);
+  }
   const records = allRows<{id:string}>(db, "SELECT id FROM decision_method_records WHERE run_id = ?",runId).map(r=>getMethodRecord(db,r.id));
   const scopes = decision ? [...decision.draftCards.map(c=>c.draftId), ...(decision.finalDecision === "wait" || decision.finalDecision === "skip" ? [decision.finalDecision] : [])] : [];
   const missingMethodScopes = scopes.filter(scope=>!records.some(r=>r.scope.kind === scope || (r.scope.kind === "candidate" && r.scope.draftId === scope)));
@@ -276,6 +280,7 @@ function advancePhase(db: Db, run: RunRow, at: string): void {
   }
   const decision = decide({ runId: run.id, bundle: bundleContent(db, run), reports: toReports(assignments), decidedAt: at });
   db.prepare("UPDATE research_runs SET decision = ? WHERE id = ? AND decision IS NULL").run(JSON.stringify(decision), run.id);
+  if (getMethodContext(db,run.id)) db.prepare("INSERT INTO research_decision_seals VALUES (?, ?)").run(run.id,hashJson(decision));
   appendAudit(db, at, "research.decided", run.id, { finalDecision: decision.finalDecision, draftCards: decision.draftCards.length });
 }
 
