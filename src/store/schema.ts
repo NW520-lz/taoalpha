@@ -153,3 +153,13 @@ export const SCHEMA: string[] = [
   `CREATE TRIGGER IF NOT EXISTS risk_loss_events_no_delete BEFORE DELETE ON risk_loss_events
     BEGIN SELECT RAISE(ABORT, 'risk loss event is immutable'); END`,
 ];
+
+/** Migration 1: immutable research method records; run transactionally by openDb. */
+export const MIGRATION_1: string[] = [
+  `CREATE TABLE IF NOT EXISTS research_method_contexts (run_id TEXT PRIMARY KEY REFERENCES research_runs(id), content TEXT NOT NULL, content_sha256 TEXT NOT NULL)`,
+  `CREATE TRIGGER IF NOT EXISTS method_context_no_update BEFORE UPDATE ON research_method_contexts BEGIN SELECT RAISE(ABORT, 'method context immutable'); END`,
+  `CREATE TRIGGER IF NOT EXISTS method_context_no_delete BEFORE DELETE ON research_method_contexts BEGIN SELECT RAISE(ABORT, 'method context immutable'); END`,
+  `CREATE TABLE IF NOT EXISTS decision_method_records (id TEXT PRIMARY KEY, run_id TEXT NOT NULL REFERENCES research_runs(id), client_ref TEXT NOT NULL, content TEXT NOT NULL, content_sha256 TEXT NOT NULL, UNIQUE(run_id, client_ref))`,
+  `CREATE TRIGGER IF NOT EXISTS method_records_no_update BEFORE UPDATE ON decision_method_records BEGIN SELECT RAISE(ABORT, 'method record immutable'); END`,
+  `CREATE TRIGGER IF NOT EXISTS method_records_no_delete BEFORE DELETE ON decision_method_records BEGIN SELECT RAISE(ABORT, 'method record immutable'); END`,
+];

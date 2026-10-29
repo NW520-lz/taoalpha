@@ -1,7 +1,7 @@
 import { DatabaseSync } from "node:sqlite";
 import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
-import { SCHEMA } from "./schema.ts";
+import { SCHEMA, MIGRATION_1 } from "./schema.ts";
 
 export type Db = DatabaseSync;
 export type SqlParam = null | number | bigint | string;
@@ -11,7 +11,14 @@ export function openDb(path: string): Db {
   const db = new DatabaseSync(path);
   // busy_timeout first so the WAL switch waits for other processes; recursive_triggers makes INSERT OR REPLACE fire the immutability DELETE triggers.
   db.exec("PRAGMA busy_timeout = 5000; PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON; PRAGMA recursive_triggers = ON;");
-  for (const statement of SCHEMA) db.exec(statement);
+  inTransaction(db, () => {
+    for (const statement of SCHEMA) db.exec(statement);
+    db.exec(`CREATE TABLE IF NOT EXISTS schema_migrations (version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL)`);
+    if (!db.prepare("SELECT version FROM schema_migrations WHERE version = 1").get()) {
+      for (const statement of MIGRATION_1) db.exec(statement);
+      db.exec(`INSERT INTO schema_migrations VALUES (1, CURRENT_TIMESTAMP)`);
+    }
+  });
   return db;
 }
 

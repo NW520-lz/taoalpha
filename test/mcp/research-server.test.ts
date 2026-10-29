@@ -17,7 +17,7 @@ import type { ResearchRunView, ResearchTask } from "../../src/research/research-
 import { adversaryReport, fundamentalsReport, marketStructureReport, quantReport, synthesisReport } from "../helpers/research-fixtures.ts";
 import { DomainError } from "../../src/lib/errors.ts";
 
-const TOOL_NAMES = ["taoalpha_status", "taoalpha_scan", "taoalpha_bundle", "taoalpha_evidence", "taoalpha_research_start", "taoalpha_research_tasks", "taoalpha_research_submit", "taoalpha_research_get"];
+const TOOL_NAMES = ["taoalpha_method_context", "taoalpha_method_create", "taoalpha_method_get", "taoalpha_status", "taoalpha_scan", "taoalpha_bundle", "taoalpha_evidence", "taoalpha_research_start", "taoalpha_research_tasks", "taoalpha_research_submit", "taoalpha_research_get"];
 
 function removeTestDirectory(directory: string): void {
   const target = realpathSync(directory);
@@ -67,7 +67,7 @@ async function value<T>(client: Client, name: string, args: Record<string, unkno
   return envelope.value as T;
 }
 
-test("SDK handshake exposes only eight research tools and status performs no market/account reads", async (t) => {
+test("SDK handshake exposes only eleven research tools and status performs no market/account reads", async (t) => {
   const { client, calls } = await setup(t);
   assert.equal(client.getServerVersion()?.name, "taoalpha-research");
   const { tools } = await client.listTools();
@@ -75,7 +75,7 @@ test("SDK handshake exposes only eight research tools and status performs no mar
   for (const tool of tools) {
     assert.equal(tool.inputSchema.additionalProperties, false);
     assert.equal(tool.annotations?.destructiveHint, false);
-    assert.equal(tool.annotations?.readOnlyHint, !["taoalpha_scan", "taoalpha_research_start", "taoalpha_research_submit"].includes(tool.name));
+    assert.equal(tool.annotations?.readOnlyHint, !["taoalpha_scan", "taoalpha_research_start", "taoalpha_research_submit", "taoalpha_method_create"].includes(tool.name));
   }
   const result = await call(client, "taoalpha_status");
   assert.equal(result.ok, true);
@@ -276,4 +276,23 @@ test("MCP freezes evidence and completes three research phases with saved source
       assert.ok(calls.every((endpoint) => /^\/api\/v5\/(public|market)\//.test(endpoint)));
     });
   }
+});
+
+test("method tools share research state and reject forged context and extra fields", async (t) => {
+ const {client,calls}=await setup(t);
+ const scan=await value<ScanResult>(client,"taoalpha_scan");
+ const context={schemaVersion:1,methodVersion:"v1",instrument:null,product:null,observationResolution:null,evaluationHorizon:null};
+ const bad=await call(client,"taoalpha_research_start",{bundleId:scan.bundleId,agentMode:"serial_degraded",methodContext:{...context,hostVerified:true}});
+ assert.equal(bad.ok,false);
+ const run=await value<ResearchRunView>(client,"taoalpha_research_start",{bundleId:scan.bundleId,agentMode:"serial_degraded",methodContext:context});
+ assert.equal(run.hostVerified,false); assert.equal(run.methodContext?.methodVersion,"v1");
+ const tasks=await value<ResearchTask[]>(client,"taoalpha_research_tasks",{runId:run.runId});
+ assert.ok(tasks.every(task=>task.methodContext?.methodVersion==="v1"));
+ const result=await call(client,"taoalpha_method_create",{runId:run.runId,path:"synthetic-sentinel"});
+ assert.equal(result.ok,false); assert.ok(!JSON.stringify(result).includes("synthetic-sentinel"));
+ for(let phase=0;phase<3;phase++) for(const task of await value<ResearchTask[]>(client,"taoalpha_research_tasks",{runId:run.runId})) await value(client,"taoalpha_research_submit",{assignmentId:task.assignmentId,outcome:{kind:"failed",reason:"unavailable"}});
+ const input={clientRef:"mcp-test",runId:run.runId,scope:{kind:"wait"},principalConflict:"unknown",dominantSide:"unknown",mechanismHypothesis:"unknown",alternativeExplanations:[],supportRefs:[],counterRefs:[],unknowns:["unknown"],invalidationConditions:["unknown"],reviewAfter:null,conclusion:"wait",reason:"unknown",reasons:{returnMechanism:"unknown",currentConditions:"unknown",evidenceUnknowns:"unknown",invalidation:"unknown",costRisk:"unknown"},priorRecordId:null};
+ const record=await value<{id:string;executable:boolean}>(client,"taoalpha_method_create",input); assert.equal(record.executable,false);
+ assert.deepEqual(await value(client,"taoalpha_method_get",{recordId:record.id}),record);
+ assert.ok(calls.every(c=>!c.includes("trade")));
 });

@@ -1,3 +1,4 @@
+import { createMethodRecord, getMethodRecord, getMethodContext, type MethodContextInput } from "./research/method-record.ts";
 import { readFileSync } from "node:fs";
 import { parseArgs } from "node:util";
 import { DomainError, type ErrorCode, type Violation } from "./lib/errors.ts";
@@ -42,7 +43,8 @@ interface Output {
 const USAGE =
   "用法：status | scan [--strategy <path>] | bundle <bundleId> [--top <n>] | evidence <evidenceId> | " +
   "research start --bundle <id> --agent-mode <parallel_independent|serial_degraded> | research tasks <runId> | " +
-  "research submit <assignmentId> (--file <report.json> | --failed <reason>) | research get <runId>";
+  "research submit <assignmentId> (--file <report.json> | --failed <reason>) | research get <runId> | " +
+  "research method-context <runId> | research method-create --file <record.json> | research method-get <recordId>";
 
 const STATUS_ZH: Record<ResearchRunView["status"], string> = {
   independent_research: "独立研究",
@@ -156,11 +158,12 @@ async function research(args: string[], deps: CliDeps): Promise<Output> {
   const [sub, ...rest] = args;
   switch (sub) {
     case "start": {
-      const { values, positionals } = parse(rest, { bundle: { type: "string" }, "agent-mode": { type: "string" } });
+      const { values, positionals } = parse(rest, { bundle: { type: "string" }, "agent-mode": { type: "string" }, "method-file": { type: "string" } });
       const bundleId = stringOption(values, "bundle");
       const agentMode = stringOption(values, "agent-mode");
       if (!bundleId || !agentMode || positionals.length !== 0) throw usageError("research start requires --bundle and --agent-mode, without positional arguments");
-      const view = startResearch(deps.db, { bundleId, agentMode: agentMode as AgentMode }, deps.now);
+      const file = stringOption(values, "method-file");
+      const view = startResearch(deps.db, { bundleId, agentMode: agentMode as AgentMode, ...(file ? {methodContext: readJson(file) as MethodContextInput} : {}) }, deps.now);
       return { value: view, summaryZh: runSummary(view) };
     }
     case "tasks": {
@@ -181,6 +184,20 @@ async function research(args: string[], deps: CliDeps): Promise<Output> {
       const outcome: SubmittedOutcome = file !== undefined ? { kind: "report", report: readJson(file) } : { kind: "failed", reason: failed ?? "" };
       const view = completeTask(deps.db, { assignmentId, outcome }, deps.now);
       return { value: view, summaryZh: runSummary(view) };
+    }
+    case "method-create": {
+      const {values, positionals} = parse(rest, {file:{type:"string"}});
+      const file = stringOption(values,"file"); if (!file || positionals.length) throw usageError("method-create requires --file");
+      const value = createMethodRecord(deps.db, readJson(file), deps.now);
+      return {value, summaryZh:"方法记录已追加；论断未核验，不可执行。"};
+    }
+    case "method-get": {
+      const {positionals}=parse(rest,{}); if(positionals.length!==1 || !positionals[0]) throw usageError("method-get requires an id");
+      return {value:getMethodRecord(deps.db, positionals[0]),summaryZh:"方法记录（未核验，不可执行）。"};
+    }
+    case "method-context": {
+      const {positionals}=parse(rest,{}); if(positionals.length!==1 || !positionals[0]) throw usageError("method-context requires a run id");
+      getRun(deps.db,positionals[0]); return {value:getMethodContext(deps.db,positionals[0]),summaryZh:"冻结研究方法上下文；空值表示未启用。"};
     }
     case "get": {
       const { positionals } = parse(rest, {});
@@ -233,6 +250,7 @@ function runSummary(view: ResearchRunView): string {
     `研究运行 ${view.runId}：${STATUS_ZH[view.status]}；宿主运行方式（自报，未核验）：${view.agentMode}`,
     ...view.assignments.map((a) => `- ${a.role}（第 ${a.phase} 阶段）：${STATE_ZH[a.state]}`),
   ];
+  if (view.methodRecordGap) lines.push("方法记录缺失；候选不可执行。");
   if (view.missingRoles.length > 0) lines.push(`缺失角色：${view.missingRoles.join(", ")}`);
   const decision = view.decision;
   if (decision) {

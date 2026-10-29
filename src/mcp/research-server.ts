@@ -3,7 +3,8 @@ import { CallToolRequestSchema, type CallToolResult } from "@modelcontextprotoco
 import { z } from "zod";
 import { runCli, type CliDeps, type Envelope } from "../cli.ts";
 import { DomainError, type ErrorCode } from "../lib/errors.ts";
-import { completeTask } from "../research/research-service.ts";
+import { createMethodRecord, getMethodRecord, getMethodContext, methodContextSchema, methodRecordSchema } from "../research/method-record.ts";
+import { completeTask, startResearch, getRun } from "../research/research-service.ts";
 import type { ScanContent } from "../scan/scan.ts";
 import type { PublicError } from "../okx/public-client.ts";
 
@@ -83,8 +84,8 @@ export function createResearchMcpServer(deps: CliDeps): McpServer {
   add("taoalpha_evidence", "evidence", "按引用读取研究证据。", z.object({ evidenceId: id("ev") }).strict(), false,
     ({ evidenceId }) => runCli(["evidence", evidenceId], deps));
   add("taoalpha_research_start", "research start", "创建本地三阶段研究任务；宿主运行方式自报且未核验。",
-    z.object({ bundleId: id("bundle"), agentMode: z.enum(["parallel_independent", "serial_degraded"]) }).strict(), true,
-    ({ bundleId, agentMode }) => runCli(["research", "start", "--bundle", bundleId, "--agent-mode", agentMode], deps));
+    z.object({ bundleId: id("bundle"), agentMode: z.enum(["parallel_independent", "serial_degraded"]), methodContext:methodContextSchema.optional() }).strict(), true,
+    async (input) => { const view=startResearch(deps.db,input,deps.now); return {...await runCli(["research","get",view.runId],deps),operation:"research start"}; });
   add("taoalpha_research_tasks", "research tasks", "拉取当前阶段的角色任务；不启动宿主 Agent。", z.object({ runId: id("run") }).strict(), false,
     ({ runId }) => runCli(["research", "tasks", runId], deps));
   add("taoalpha_research_submit", "research submit", "提交结构化报告或失败原因；只写本地研究记录，不读取请求文件。",
@@ -97,6 +98,13 @@ export function createResearchMcpServer(deps: CliDeps): McpServer {
     });
   add("taoalpha_research_get", "research get", "读取研究结论、来源和不可执行草稿；不构成交易授权。", z.object({ runId: id("run") }).strict(), false,
     ({ runId }) => runCli(["research", "get", runId], deps));
+
+  add("taoalpha_method_create", "research method-create", "追加本地方法记录；无交易所写入，论断未核验。", methodRecordSchema, true,
+    async input => ({ok:true, operation:"research method-create",mode:"M0_readonly_research", asOf:deps.now().toISOString(),value:createMethodRecord(deps.db,input,deps.now),summaryZh:"本地方法记录已追加；不可执行。"}));
+  add("taoalpha_method_get", "research method-get", "读取本地方法记录。", z.object({recordId:id("method")}).strict(), false,
+    async ({recordId}) => ({ok:true,operation:"research method-get",mode:"M0_readonly_research",asOf:deps.now().toISOString(),value:getMethodRecord(deps.db,recordId),summaryZh:"方法记录未核验。"}));
+  add("taoalpha_method_context", "research method-context", "读取冻结方法上下文。", z.object({runId:id("run")}).strict(), false,
+    async ({runId}) => {getRun(deps.db,runId); return {ok:true,operation:"research method-context",mode:"M0_readonly_research",asOf:deps.now().toISOString(),value:getMethodContext(deps.db,runId),summaryZh:"冻结方法上下文。"};});
 
   // The SDK's default validation errors contain raw input diagnostics and lack structuredContent.
   // Its documented underlying server supports a handler that enforces the same published schemas safely.

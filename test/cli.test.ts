@@ -164,3 +164,15 @@ test("bundle --top must be a positive integer", async () => {
     assert.deepEqual(envelope.error?.violations, [{ ruleId: "cli.usage" }]);
   }
 });
+
+test('CLI method context and append record share research backend', async () => {
+ const {deps,dir,calls}=setup(); const scan=await call<ScanResult>(deps,'scan');
+ const context={schemaVersion:1,methodVersion:'v1',instrument:null,product:null,observationResolution:null,evaluationHorizon:null};
+ const run=await call<ResearchRunView>(deps,'research','start','--bundle',scan.bundleId,'--agent-mode','serial_degraded','--method-file',writeJson(dir,'context.json',context));
+ for(let phase=0;phase<3;phase++) for(const task of await call<ResearchTask[]>(deps,'research','tasks',run.runId)) await call(deps,'research','submit',task.assignmentId,'--failed','unavailable');
+ const input={clientRef:'cli-test',runId:run.runId,scope:{kind:'wait'},principalConflict:'unknown',dominantSide:'unknown',mechanismHypothesis:'unknown',alternativeExplanations:[],supportRefs:[],counterRefs:[],unknowns:['unknown'],invalidationConditions:['unknown'],reviewAfter:null,conclusion:'wait',reason:'unknown',reasons:{returnMechanism:'unknown',currentConditions:'unknown',evidenceUnknowns:'unknown',invalidation:'unknown',costRisk:'unknown'},priorRecordId:null};
+ const record=await call<{id:string;executable:boolean}>(deps,'research','method-create','--file',writeJson(dir,'record.json',input));
+ assert.equal(record.executable,false); assert.deepEqual(await call(deps,'research','method-get',record.id),record);
+ assert.equal((await call<ResearchRunView>(deps,'research','get',run.runId)).methodRecordGap,false);
+ assert.ok(calls.every(c=>!c.includes('trade'))); deps.db.close();
+});

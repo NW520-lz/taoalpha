@@ -1,3 +1,4 @@
+import { parseMethodContext, getMethodContext, getMethodRecord, type MethodContextInput, type FrozenMethodContext } from "./method-record.ts";
 import { DomainError } from "../lib/errors.ts";
 import { hashJson } from "../lib/hash.ts";
 import { newId } from "../lib/ids.ts";
@@ -38,6 +39,7 @@ export interface ResearchTask {
   bundle: { id: string; sha256: string };
   /** Empty in phase 1: independent roles never see each other's reports. */
   priorReports: PriorReport[];
+  methodContext: FrozenMethodContext | null;
 }
 
 export type RunStatus = "independent_research" | "challenge" | "synthesis" | "decided";
@@ -56,6 +58,9 @@ export interface ResearchRunView {
   missingRoles: ResearchRole[];
   /** Set once synthesis is finished. Never an execution permission. */
   decision: Decision | null;
+  methodContext: FrozenMethodContext | null;
+  methodRecordGap: boolean;
+  missingMethodScopes: string[];
 }
 
 interface RunRow {
@@ -79,7 +84,7 @@ interface AssignmentRow {
   submitted_sha256: string | null;
 }
 
-export function startResearch(db: Db, input: { bundleId: string; agentMode: AgentMode }, now: () => Date): ResearchRunView {
+export function startResearch(db: Db, input: { bundleId: string; agentMode: AgentMode; methodContext?: MethodContextInput }, now: () => Date): ResearchRunView {
   if (!AGENT_MODES.includes(input.agentMode)) {
     throw new DomainError("INVALID_INPUT", `agentMode must be one of ${AGENT_MODES.join(", ")}`, [{ ruleId: "research.agent_mode", field: "agentMode" }]);
   }
@@ -87,11 +92,13 @@ export function startResearch(db: Db, input: { bundleId: string; agentMode: Agen
   if (!bundle) {
     throw new DomainError("INVALID_INPUT", `unknown evidence bundle ${input.bundleId}`, [{ ruleId: "research.bundle_exists", field: "bundleId" }]);
   }
+  const context = input.methodContext === undefined ? null : parseMethodContext(input.methodContext, bundle);
   const runId = newId("run");
   const at = now().toISOString();
   inTransaction(db, () => {
     db.prepare("INSERT INTO research_runs (id, bundle_id, bundle_sha256, agent_mode, created_at) VALUES (?, ?, ?, ?, ?)")
       .run(runId, bundle.id, bundle.contentSha256, input.agentMode, at);
+    if (context) db.prepare("INSERT INTO research_method_contexts VALUES (?, ?, ?)").run(runId, JSON.stringify(context), hashJson(context));
     createAssignments(db, runId, 1, at);
     appendAudit(db, at, "research.started", runId, { bundleId: bundle.id, agentMode: input.agentMode });
   });
@@ -112,6 +119,7 @@ export function nextTasks(db: Db, runId: string): ResearchTask[] {
       rules: COMMON_RULES_ZH,
       bundle: { id: run.bundle_id, sha256: run.bundle_sha256 },
       priorReports: toReports(assignments.filter((p) => p.phase < a.phase)),
+      methodContext: getMethodContext(db, runId),
     }));
 }
 
@@ -148,6 +156,10 @@ export function completeTask(db: Db, input: { assignmentId: string; outcome: Sub
 export function getRun(db: Db, runId: string): ResearchRunView {
   const run = requireRun(db, runId);
   const assignments = loadAssignments(db, runId);
+  const decision = run.decision === null ? null : JSON.parse(run.decision) as Decision;
+  const records = allRows<{id:string}>(db, "SELECT id FROM decision_method_records WHERE run_id = ?",runId).map(r=>getMethodRecord(db,r.id));
+  const scopes = decision ? [...decision.draftCards.map(c=>c.draftId), ...(decision.finalDecision === "wait" || decision.finalDecision === "skip" ? [decision.finalDecision] : [])] : [];
+  const missingMethodScopes = scopes.filter(scope=>!records.some(r=>r.scope.kind === scope || (r.scope.kind === "candidate" && r.scope.draftId === scope)));
   return {
     runId: run.id,
     bundleId: run.bundle_id,
@@ -160,7 +172,10 @@ export function getRun(db: Db, runId: string): ResearchRunView {
     // A report is shown only once its whole phase is closed, so independent roles cannot read each other's work through this view.
     reports: toReports(assignments.filter((a) => !assignments.some((other) => other.phase === a.phase && other.state === "open"))),
     missingRoles: assignments.filter((a) => a.state === "failed").map((a) => a.role),
-    decision: run.decision === null ? null : (JSON.parse(run.decision) as Decision),
+    decision,
+    methodContext: getMethodContext(db, runId),
+    methodRecordGap: decision === null ? false : missingMethodScopes.length > 0,
+    missingMethodScopes,
   };
 }
 
@@ -294,6 +309,7 @@ function parseOutcome(assignment: AssignmentRow): StoredOutcome {
 function bundleContent(db: Db, run: RunRow): ScanContent {
   const bundle = getBundle(db, run.bundle_id);
   if (!bundle) throw new Error(`run ${run.id} references missing bundle ${run.bundle_id}`);
+  if (bundle.contentSha256 !== run.bundle_sha256 || hashJson(bundle.content) !== run.bundle_sha256) throw new DomainError("INVALID_INPUT", "bundle hash mismatch", [{ ruleId: "research.bundle_hash" }]);
   return bundle.content as ScanContent;
 }
 
