@@ -84,6 +84,23 @@ export const SCHEMA: string[] = [
     BEGIN SELECT RAISE(ABORT, 'risk loss scope is immutable'); END`,
   `CREATE TRIGGER IF NOT EXISTS risk_loss_scopes_no_delete BEFORE DELETE ON risk_loss_scopes
     BEGIN SELECT RAISE(ABORT, 'risk loss scope is immutable'); END`,
+  `CREATE TABLE IF NOT EXISTS risk_loss_scope_arithmetic (
+    scope_id TEXT PRIMARY KEY REFERENCES risk_loss_scopes(id),
+    version INTEGER NOT NULL CHECK (version = 2)
+  )`,
+  `CREATE TRIGGER IF NOT EXISTS risk_loss_scope_arithmetic_no_update BEFORE UPDATE ON risk_loss_scope_arithmetic
+    BEGIN SELECT RAISE(ABORT, 'risk arithmetic version is immutable'); END`,
+  `CREATE TRIGGER IF NOT EXISTS risk_loss_scope_arithmetic_no_delete BEFORE DELETE ON risk_loss_scope_arithmetic
+    BEGIN SELECT RAISE(ABORT, 'risk arithmetic version is immutable'); END`,
+  `CREATE TABLE IF NOT EXISTS risk_loss_write_authorizations (
+    id TEXT PRIMARY KEY,
+    scope_id TEXT NOT NULL REFERENCES risk_loss_scope_arithmetic(scope_id),
+    kind TEXT NOT NULL CHECK (kind IN ('capital', 'observation'))
+  )`,
+  `CREATE TRIGGER IF NOT EXISTS risk_loss_write_authorizations_no_update BEFORE UPDATE ON risk_loss_write_authorizations
+    BEGIN SELECT RAISE(ABORT, 'risk arithmetic write authorization is immutable'); END`,
+  `CREATE TRIGGER IF NOT EXISTS risk_loss_write_authorizations_no_delete BEFORE DELETE ON risk_loss_write_authorizations
+    BEGIN SELECT RAISE(ABORT, 'risk arithmetic write authorization is immutable'); END`,
   `CREATE TABLE IF NOT EXISTS risk_capital_events (
     id TEXT PRIMARY KEY,
     scope_id TEXT NOT NULL REFERENCES risk_loss_scopes(id),
@@ -99,6 +116,9 @@ export const SCHEMA: string[] = [
     BEGIN SELECT RAISE(ABORT, 'capital event is immutable'); END`,
   `CREATE TRIGGER IF NOT EXISTS risk_capital_events_no_delete BEFORE DELETE ON risk_capital_events
     BEGIN SELECT RAISE(ABORT, 'capital event is immutable'); END`,
+  `CREATE TRIGGER IF NOT EXISTS risk_capital_events_write_guard BEFORE INSERT ON risk_capital_events
+    WHEN NOT EXISTS (SELECT 1 FROM risk_loss_write_authorizations WHERE id = NEW.id AND scope_id = NEW.scope_id AND kind = 'capital')
+    BEGIN SELECT RAISE(ABORT, 'risk arithmetic write guard'); END`,
   `CREATE TABLE IF NOT EXISTS risk_equity_observations (
     id TEXT PRIMARY KEY,
     scope_id TEXT NOT NULL REFERENCES risk_loss_scopes(id),
@@ -116,6 +136,9 @@ export const SCHEMA: string[] = [
     BEGIN SELECT RAISE(ABORT, 'equity observation is immutable'); END`,
   `CREATE TRIGGER IF NOT EXISTS risk_equity_observations_no_delete BEFORE DELETE ON risk_equity_observations
     BEGIN SELECT RAISE(ABORT, 'equity observation is immutable'); END`,
+  `CREATE TRIGGER IF NOT EXISTS risk_equity_observations_write_guard BEFORE INSERT ON risk_equity_observations
+    WHEN NOT EXISTS (SELECT 1 FROM risk_loss_write_authorizations WHERE id = NEW.id AND scope_id = NEW.scope_id AND kind = 'observation')
+    BEGIN SELECT RAISE(ABORT, 'risk arithmetic write guard'); END`,
   `CREATE TABLE IF NOT EXISTS risk_loss_events (
     id TEXT PRIMARY KEY,
     scope_id TEXT NOT NULL REFERENCES risk_loss_scopes(id),

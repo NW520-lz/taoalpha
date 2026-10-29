@@ -6,6 +6,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createConfirmationService } from '../../src/control/confirmations.ts';
 import { createDemoRiskPolicyService } from '../../src/risk/demo-risk-policy.ts';
+import { initializeLossScope, observeEquity } from '../../src/risk/loss-ledger.ts';
 
 const at = new Date('2026-10-29T12:00:00Z');
 const policy = { id:'policy:synthetic', version:1, initialEquityUsdt:'100', budgetsUsdt:{reserve:'20',spot:'30',perpetual:'50'}, lossLinesUsdt:{review:'1',pause:'2',stop:'3'}, limits:{maxSpotAssets:2,maxPerpetualPositions:1,maxSpotPlanLossUsdt:'1',maxPerpetualPlanLossUsdt:'2',maxPerpetualLeverage:'2'} };
@@ -93,11 +94,14 @@ test('decision denial and expiry do not create confirmation',async()=>{
 
 test('policy confirmation does not touch unrelated risk event records',async()=>{
  const {db,service,confirmations}=setup(); try {
-  db.exec("INSERT INTO risk_loss_scopes VALUES('synthetic-scope','p',1,'h','{}','b','2026-01-01',1); INSERT INTO risk_equity_observations VALUES('synthetic-observation','synthetic-scope','s','2026-01-01',1,'1',1,1,'h','{}'); INSERT INTO risk_loss_events VALUES('synthetic-event','synthetic-scope','synthetic-observation','hard_stop','1','2026-01-01')");
+  const { limits: _limits, ...lossPolicy } = policy;
+  initializeLossScope(db,{scopeId:'synthetic-scope',policy:lossPolicy,baselineRef:'synthetic-baseline',at:'2026-01-01T00:00:00Z'});
+  const loss=observeEquity(db,{scopeId:'synthetic-scope',sourceRef:'synthetic-snapshot',observedAt:'2026-01-01T00:01:00Z',equityUsdt:'96',accountReconciled:true,capitalHistoryReconciled:true});
+  assert.equal(loss.state,'hard_stopped');
   const p=service.propose({proposalId:'proposal:events',policy,expiresAt:'2026-10-29T12:01:00Z'});
   const r=(await confirmations.reviewAndConfirm(p.requestId)).receiptId!;
   service.confirm('proposal:events',r);
-  assert.equal(db.prepare('SELECT kind FROM risk_loss_events WHERE id=?').get('synthetic-event')!.kind,'hard_stop');
+  assert.equal(db.prepare("SELECT COUNT(*) AS n FROM risk_loss_events WHERE kind='hard_stop'").get()!.n,1);
  } finally {db.close()}
 });
 

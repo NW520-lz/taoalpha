@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { Decimal, dec, isDecimalString } from "../lib/decimal.ts";
+import { Decimal, dec, isDecimalString } from "./risk-decimal.ts";
 import { DomainError, type Violation } from "../lib/errors.ts";
 
 const text = z.string().trim().min(1);
@@ -134,7 +134,7 @@ export function assessEntryRisk(input: EntryRiskInput): EntryRiskAssessment {
 
   const step = dec(inst.lotSz);
   const requested = dec(plan.product === "spot" ? plan.baseQuantity : plan.contracts);
-  const quantity = requested.div(step).floor().mul(step);
+  const quantity = requested.divToInt(step).mul(step);
   if (quantity.lt(dec(inst.minSz)) || quantity.isZero()) block("entry.minimum_quantity", plan.product === "spot" ? "proposal.baseQuantity" : "proposal.contracts");
   const entry = dec(plan.entryPriceUsdt);
   const stop = dec(plan.stopPriceUsdt);

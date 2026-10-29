@@ -1,7 +1,8 @@
 import { Decimal as BaseDecimal } from "decimal.js";
 
 // decimal.js defaults to 20 significant digits, which silently rounds
-// price × size × contract-value products. 50 digits keeps them exact.
+// price × size × contract-value products. Results are limited to 50 significant
+// digits; risk calculations use their own bounded, higher-precision arithmetic.
 export const Decimal = BaseDecimal.clone({ precision: 50, rounding: BaseDecimal.ROUND_HALF_EVEN });
 export type Decimal = InstanceType<typeof Decimal>;
 

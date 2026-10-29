@@ -4,6 +4,8 @@ import { mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { isAbsolute, join, relative } from "node:path";
 import { openDb, type Db } from "../../src/store/db.ts";
+import { SCHEMA } from "../../src/store/schema.ts";
+import { hashJson } from "../../src/lib/hash.ts";
 import { initializeLossScope, observeEquity, recordConfirmedCapitalEvent, type LossPolicy } from "../../src/risk/loss-ledger.ts";
 import { expectDomainError } from "../helpers/assertions.ts";
 
@@ -14,6 +16,68 @@ const policy: LossPolicy = {
   budgetsUsdt: { reserve: "300", spot: "150", perpetual: "50" },
   lossLinesUsdt: { review: "25", pause: "60", stop: "120" },
 };
+
+test("a tiny budget excess over the baseline is rejected", () => {
+  const db = openDb(":memory:");
+  const excessive = { ...policy, initialEquityUsdt: "1", budgetsUsdt: { reserve: "1", spot: `0.${"0".repeat(50)}1`, perpetual: "0" }, lossLinesUsdt: { review: "0.1", pause: "0.2", stop: "0.3" } };
+  expectDomainError(() => initializeLossScope(db, { scopeId: "tiny-excess", baselineRef: "b", at: "2026-10-28T00:00:00Z", policy: excessive }), "INVALID_INPUT", { ruleId: "risk.budgets_within_baseline" });
+  db.close();
+});
+
+test("ledger rejects oversize policy and observation amounts", () => {
+  const oversize = `0.${"0".repeat(255)}1`;
+  const db = openDb(":memory:");
+  expectDomainError(() => initializeLossScope(db, { scopeId: "oversize", baselineRef: "b", at: "2026-10-28T00:00:00Z", policy: { ...policy, initialEquityUsdt: oversize } }), "INVALID_INPUT", { ruleId: "risk.schema" });
+  db.close();
+  const fixture = setup();
+  expectDomainError(() => fixture.observe(oversize), "INVALID_INPUT", { ruleId: "risk.decimal" });
+  assert.throws(() => fixture.db.exec("DELETE FROM risk_loss_scope_arithmetic"), /immutable/);
+  assert.throws(() => fixture.db.exec("UPDATE risk_loss_scope_arithmetic SET version = 2"), /immutable/);
+  fixture.db.close();
+});
+
+test("legacy arithmetic scopes stay locked even when an old observation is replayed", () => {
+  const db = openDb(":memory:");
+  db.prepare("INSERT INTO risk_loss_scopes (id, policy_id, policy_version, policy_hash, policy_json, baseline_ref, baseline_at, baseline_ms) VALUES (?, ?, ?, ?, ?, ?, ?, ?)")
+    .run("legacy", policy.id, policy.version, "legacy-hash", JSON.stringify(policy), "baseline", "2026-10-28T00:00:00Z", Date.parse("2026-10-28T00:00:00Z"));
+  const input = { scopeId: "legacy", sourceRef: "old", observedAt: "2026-10-28T00:01:00Z", equityUsdt: "500", accountReconciled: true, capitalHistoryReconciled: true };
+  // Simulate a row written before the upgraded guard existed, then restore it.
+  db.exec("DROP TRIGGER risk_equity_observations_write_guard");
+  db.prepare("INSERT INTO risk_equity_observations (id, scope_id, source_ref, observed_at, observed_ms, equity_usdt, account_reconciled, capital_history_reconciled, input_hash, result_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
+    .run("old-id", "legacy", "old", input.observedAt, Date.parse(input.observedAt), "500", 1, 1, hashJson(input), JSON.stringify({ blockNewRisk: false }));
+  const guard = SCHEMA.find((sql) => sql.includes("CREATE TRIGGER IF NOT EXISTS risk_equity_observations_write_guard"));
+  assert.ok(guard);
+  db.exec(guard);
+  expectDomainError(() => observeEquity(db, input), "INVALID_INPUT", { ruleId: "risk.legacy_arithmetic_requires_review" });
+  expectDomainError(() => recordConfirmedCapitalEvent(db, { scopeId: "legacy", exchangeRef: "c", kind: "deposit", amountUsdt: "1", occurredAt: "2026-10-28T00:00:10Z" }), "INVALID_INPUT", { ruleId: "risk.legacy_arithmetic_requires_review" });
+  assert.equal(db.prepare("SELECT COUNT(*) AS n FROM risk_loss_scopes").get()?.n, 1);
+  db.close();
+});
+
+test("old-version writers cannot insert observations or capital into a current scope", () => {
+  const { db, scopeId } = setup();
+  assert.throws(() => db.prepare("INSERT INTO risk_equity_observations (id, scope_id, source_ref, observed_at, observed_ms, equity_usdt, account_reconciled, capital_history_reconciled, input_hash, result_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
+    .run("old-version-observation", scopeId, "old-version", "2026-10-28T00:01:00Z", Date.parse("2026-10-28T00:01:00Z"), "500", 1, 1, "hash", "{}"), /arithmetic write guard/);
+  assert.throws(() => db.prepare("INSERT INTO risk_capital_events (id, scope_id, exchange_ref, kind, amount_usdt, occurred_at, occurred_ms, input_hash) VALUES (?, ?, ?, ?, ?, ?, ?, ?)")
+    .run("old-version-capital", scopeId, "old-capital", "deposit", "1", "2026-10-28T00:00:10Z", Date.parse("2026-10-28T00:00:10Z"), "hash"), /arithmetic write guard/);
+  db.close();
+});
+
+test("write authorization and scope markers roll back with their protected records", () => {
+  const db = openDb(":memory:");
+  db.exec("CREATE TRIGGER fail_scope_marker BEFORE INSERT ON risk_loss_scope_arithmetic BEGIN SELECT RAISE(ABORT, 'injected failure'); END");
+  assert.throws(() => initializeLossScope(db, { scopeId: "failed-scope", policy, baselineRef: "b", at: "2026-10-28T00:00:00Z" }), /injected failure/);
+  assert.equal(db.prepare("SELECT COUNT(*) AS n FROM risk_loss_scopes").get()?.n, 0);
+  db.exec("DROP TRIGGER fail_scope_marker");
+  initializeLossScope(db, { scopeId: "scope", policy, baselineRef: "b", at: "2026-10-28T00:00:00Z" });
+  db.exec("CREATE TRIGGER fail_observation BEFORE INSERT ON risk_equity_observations BEGIN SELECT RAISE(ABORT, 'injected failure'); END");
+  assert.throws(() => observeEquity(db, { scopeId: "scope", sourceRef: "one", observedAt: "2026-10-28T00:01:00Z", equityUsdt: "500", accountReconciled: true, capitalHistoryReconciled: true }), /injected failure/);
+  assert.equal(db.prepare("SELECT COUNT(*) AS n FROM risk_loss_write_authorizations").get()?.n, 0);
+  db.exec("DROP TRIGGER fail_observation");
+  const result = observeEquity(db, { scopeId: "scope", sourceRef: "one", observedAt: "2026-10-28T00:01:00Z", equityUsdt: "500", accountReconciled: true, capitalHistoryReconciled: true });
+  assert.equal(result.state, "active");
+  db.close();
+});
 
 function setup(scopeId = "synthetic-scope") {
   const db = openDb(":memory:");

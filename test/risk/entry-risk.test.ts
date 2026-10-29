@@ -32,6 +32,52 @@ function rules(input: EntryRiskInput): string[] {
   return assessEntryRisk(input).violations.map((v) => v.ruleId);
 }
 
+test("tiny positive cost cannot disappear at the budget boundary", () => {
+  const input = spotInput();
+  if (input.proposal.product !== "spot") throw new Error("fixture");
+  input.instrument.lotSz = "1";
+  input.instrument.minSz = "1";
+  input.proposal.baseQuantity = "1";
+  input.proposal.entryPriceUsdt = "1";
+  input.proposal.stopPriceUsdt = "0.5";
+  input.proposal.costs.feesUsdt = `0.${"0".repeat(50)}1`;
+  input.proposal.costs.slippageUsdt = "0";
+  input.policy.spotBudgetUsdt = "1";
+  assert.ok(rules(input).includes("entry.spot_budget"));
+});
+
+test("quantity infinitesimally below a lot cannot round up", () => {
+  const input = spotInput();
+  if (input.proposal.product !== "spot") throw new Error("fixture");
+  input.instrument.lotSz = "1";
+  input.instrument.minSz = "1";
+  input.proposal.baseQuantity = `0.${"9".repeat(51)}`;
+  const result = assessEntryRisk(input);
+  assert.equal(result.sizing.baseQuantity, "0");
+  assert.ok(result.violations.some((v) => v.ruleId === "entry.minimum_quantity"));
+});
+
+test("nonterminating margin is rounded conservatively above a truncated budget", () => {
+  const input = perpetualInput();
+  if (input.proposal.product !== "usdt_perpetual") throw new Error("fixture");
+  input.instrument.ctVal = "1";
+  input.proposal.contracts = "1";
+  input.proposal.entryPriceUsdt = "1";
+  input.proposal.stopPriceUsdt = "0.5";
+  input.proposal.leverage = "3";
+  input.proposal.costs.feesUsdt = "0";
+  input.proposal.costs.slippageUsdt = "0";
+  input.proposal.costs.funding = { kind: "estimate", costUsdt: "0" };
+  input.policy.perpetualBudgetUsdt = `0.${"3".repeat(200)}`;
+  assert.ok(rules(input).includes("entry.perpetual_budget"));
+});
+
+test("risk input rejects decimals beyond the supported length", () => {
+  const input = spotInput();
+  input.policy.spotBudgetUsdt = `0.${"0".repeat(255)}1`;
+  assert.throws(() => assessEntryRisk(input), /invalid entry risk input/);
+});
+
 test("spot quantity rounds down before loss and budget are calculated, with units kept explicit", () => {
   const result = assessEntryRisk(spotInput());
   assert.equal(result.status, "eligible_for_plan");

@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { DomainError } from "../lib/errors.ts";
-import { Decimal, dec, isDecimalString } from "../lib/decimal.ts";
+import { Decimal, dec, isDecimalString } from "./risk-decimal.ts";
 import { hashJson } from "../lib/hash.ts";
 import { newId } from "../lib/ids.ts";
 import { allRows, getRow, inTransaction, type Db } from "../store/db.ts";
@@ -52,6 +52,7 @@ export function initializeLossScope(db: Db, input: { scopeId: string; policy: Lo
   return inTransaction(db, () => {
     const existing = getRow<ScopeRow>(db, "SELECT * FROM risk_loss_scopes WHERE id = ?", scopeId);
     if (existing) {
+      requireCurrentArithmetic(db, scopeId);
       if (existing.policy_hash !== policyHash || existing.baseline_ref !== baselineRef || existing.baseline_at !== at) {
         throw new DomainError("IDEMPOTENCY_CONFLICT", "scope baseline or risk policy differs from the stored version", [{ ruleId: "risk.scope_immutable", field: "scopeId" }]);
       }
@@ -59,6 +60,7 @@ export function initializeLossScope(db: Db, input: { scopeId: string; policy: Lo
     }
     db.prepare("INSERT INTO risk_loss_scopes (id, policy_id, policy_version, policy_hash, policy_json, baseline_ref, baseline_at, baseline_ms) VALUES (?, ?, ?, ?, ?, ?, ?, ?)")
       .run(scopeId, policy.id, policy.version, policyHash, JSON.stringify(policy), baselineRef, at, Date.parse(at));
+    db.prepare("INSERT INTO risk_loss_scope_arithmetic (scope_id, version) VALUES (?, 2)").run(scopeId);
     return policyHash;
   });
 }
@@ -92,6 +94,7 @@ export function recordConfirmedCapitalEvent(db: Db, input: {
       return existing.id;
     }
     const id = newId("capital");
+    db.prepare("INSERT INTO risk_loss_write_authorizations (id, scope_id, kind) VALUES (?, ?, 'capital')").run(id, scopeId);
     db.prepare("INSERT INTO risk_capital_events (id, scope_id, exchange_ref, kind, amount_usdt, occurred_at, occurred_ms, input_hash) VALUES (?, ?, ?, ?, ?, ?, ?, ?)")
       .run(id, scopeId, exchangeRef, input.kind, amount.toFixed(), occurredAt, Date.parse(occurredAt), inputHash);
     return id;
@@ -134,14 +137,15 @@ export function observeEquity(db: Db, input: {
       throw new DomainError("INVALID_INPUT", "equity observations must advance in time", [{ ruleId: "risk.observation_time_increases", field: "observedAt" }]);
     }
 
-    const policy = JSON.parse(scope.policy_json) as LossPolicy;
+    const policy = parse(policySchema, JSON.parse(scope.policy_json) as unknown, "stored policy");
+    validatePolicy(policy);
     const missing: LossObservation["missing"] = [];
     if (!input.accountReconciled) missing.push("account_reconciliation");
     if (!input.capitalHistoryReconciled) missing.push("capital_history_reconciliation");
     const dataReady = missing.length === 0;
     const capital = allRows<CapitalRow>(db, "SELECT id, input_hash, kind, amount_usdt FROM risk_capital_events WHERE scope_id = ? AND occurred_ms <= ?", scopeId, observedMs);
-    const deposits = capital.filter((c) => c.kind === "deposit").reduce((sum, c) => sum.plus(dec(c.amount_usdt)), new Decimal(0));
-    const withdrawals = capital.filter((c) => c.kind === "withdrawal").reduce((sum, c) => sum.plus(dec(c.amount_usdt)), new Decimal(0));
+    const deposits = capital.filter((c) => c.kind === "deposit").reduce((sum, c) => sum.plus(decimal(c.amount_usdt, "stored capital amount")), new Decimal(0));
+    const withdrawals = capital.filter((c) => c.kind === "withdrawal").reduce((sum, c) => sum.plus(decimal(c.amount_usdt, "stored capital amount")), new Decimal(0));
     const pnl = dataReady ? equity.plus(withdrawals).minus(deposits).minus(dec(policy.initialEquityUsdt)) : null;
     const loss = pnl ? Decimal.max(0, pnl.negated()) : null;
     const priorReady = getRow<ObservationRow>(db,
@@ -182,6 +186,7 @@ export function observeEquity(db: Db, input: {
       blockNewRisk: !dataReady || state === "soft_paused" || state === "hard_stopped",
       eventIds: events.map((e) => e.id), requiredActions,
     };
+    db.prepare("INSERT INTO risk_loss_write_authorizations (id, scope_id, kind) VALUES (?, ?, 'observation')").run(observationId, scopeId);
     db.prepare("INSERT INTO risk_equity_observations (id, scope_id, source_ref, observed_at, observed_ms, equity_usdt, account_reconciled, capital_history_reconciled, input_hash, result_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
       .run(observationId, scopeId, sourceRef, observedAt, observedMs, equity.toFixed(), Number(input.accountReconciled), Number(input.capitalHistoryReconciled), inputHash, JSON.stringify(result));
     for (const event of newEvents) {
@@ -209,7 +214,13 @@ function validatePolicy(policy: LossPolicy): void {
 function requireScope(db: Db, scopeId: string): ScopeRow {
   const scope = getRow<ScopeRow>(db, "SELECT id, policy_hash, policy_json, baseline_ref, baseline_at, baseline_ms FROM risk_loss_scopes WHERE id = ?", scopeId);
   if (!scope) invalid("risk.scope_exists", "scopeId");
+  requireCurrentArithmetic(db, scopeId);
   return scope;
+}
+
+function requireCurrentArithmetic(db: Db, scopeId: string): void {
+  const marker = getRow<{ version: number }>(db, "SELECT version FROM risk_loss_scope_arithmetic WHERE scope_id = ?", scopeId);
+  if (marker?.version !== 2) invalid("risk.legacy_arithmetic_requires_review", "scopeId");
 }
 
 function parse<T>(schema: z.ZodType<T>, value: unknown, field: string): T {
