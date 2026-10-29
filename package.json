@@ -13,7 +13,8 @@
     "test:live": "node --test \"test-live/**/*.live.ts\"",
     "typecheck": "tsc -p .",
     "okx": "node src/main.ts",
-    "demo:check": "node src/demo-main.ts"
+    "demo:check": "node src/demo-main.ts",
+    "mcp": "node src/mcp-main.ts"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "1.32.2",
