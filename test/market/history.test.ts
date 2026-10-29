@@ -39,7 +39,7 @@ test('swap funding uses realized rate and contract units without completeness cl
 test('pagination cap, duplicate conflict and cursor violation stay partial', async () => {
  const capped=await collectHistory(fake({'/api/v5/market/history-candles':[[row(60000),row(0)]]}),{...options,maxPages:1});
  assert.ok(capped.gaps.includes('candle_page_cap')); assert.equal(capped.candleCoverage,'partial');
- const conflicting=[...row(60000)]; conflicting[1]='99';
+ const conflicting=[...row(60000)]; conflicting[1]='10.02';
  const dup=await collectHistory(fake({'/api/v5/market/history-candles':[[row(60000),conflicting],[row(60000),row(0)]]}),options);
  assert.ok(dup.gaps.includes('candle_conflict:60000')); assert.ok(dup.gaps.some(x=>x.startsWith('candle_cursor_violation'))); assert.equal(dup.candles.length,1);
 });
@@ -70,4 +70,19 @@ test('empty, unsorted and stalled pages do not silently yield complete coverage'
  const empty=await collectHistory(fake({}),options); assert.equal(empty.candleCoverage,'partial'); assert.ok(empty.gaps.includes('candle_missing:0'));
  const unsorted=await collectHistory(fake({'/api/v5/market/history-candles':[[row(0),row(60000)],[row(60000),row(60000)]]}),options);
  assert.ok(unsorted.gaps.some(x=>x.startsWith('candle_unsorted_or_duplicate'))); assert.ok(unsorted.gaps.includes('candle_cursor_stalled')); assert.equal(unsorted.candleCoverage,'partial');
+});
+
+test('negative and inconsistent candle values are gaps', async () => {
+ for (const [field,value] of [[1,'-1'],[2,'8'],[3,'12'],[4,'12'],[5,'-0.01'],[6,'-1'],[7,'-1']] as const) {
+  const bad=row(0); bad[field]=value;
+  const m=await collectHistory(fake({'/api/v5/market/history-candles':[[row(60000),bad]]}),options);
+  assert.equal(m.candleCoverage,'partial',`field ${field}`); assert.equal(m.candles.length,1);
+ }
+});
+test('out-of-window candle at end is excluded before closedness check', async () => {
+ const m=await collectHistory(fake({'/api/v5/market/history-candles':[[row(120000,'0'),row(60000)],[row(0)]]}),options);
+ assert.equal(m.candleCoverage,'complete'); assert.equal(m.candles.length,2);
+});
+test('reading history from new db safely initializes and returns null', () => {
+ const db=openDb(':memory:'); assert.equal(getHistory(db,'history_missing'),null); db.close();
 });

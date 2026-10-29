@@ -1,5 +1,5 @@
 import type { PublicClient, RawResponse } from '../okx/public-client.ts';
-import { isDecimalString } from '../lib/decimal.ts';
+import { dec, isDecimalString } from '../lib/decimal.ts';
 import { canonicalJson, hashJson, sha256 } from '../lib/hash.ts';
 import { inTransaction, type Db } from '../store/db.ts';
 
@@ -65,8 +65,10 @@ export async function collectHistory(client:PublicClient, o:HistoryOptions):Prom
   if(!Array.isArray(r)||r.length!==9) { issue('candle_malformed_shape'); return null; }
   const ts=timestamp(r[0]);
   if(ts===null) { issue('candle_invalid_timestamp'); return null; }
-  if(ts % BARS[o.resolution] || !decimals(r.slice(1,8)) || r[8]!=='1' || ts+BARS[o.resolution]>o.asOf) { issue(`candle_invalid_or_unclosed:${ts}`); return ts; }
   if(ts<o.start||ts>=o.end) return ts;
+  if(ts % BARS[o.resolution] || !decimals(r.slice(1,8)) || r[8]!=='1' || ts+BARS[o.resolution]>o.asOf) { issue(`candle_invalid_or_unclosed:${ts}`); return ts; }
+  const [op,hi,lo,cl,v,vc,vcq]=(r.slice(1,8) as string[]).map(dec);
+  if ([op!,hi!,lo!,cl!].some(x=>!x.isPositive() || x.isZero()) || [v!,vc!,vcq!].some(x=>x.isNegative() && !x.isZero()) || hi!.lt(lo!) || op!.lt(lo!) || op!.gt(hi!) || cl!.lt(lo!) || cl!.gt(hi!)) { issue(`candle_invalid_values:${ts}`); return ts; }
   const [open,high,low,close,vol,volCcy,volCcyQuote]=r.slice(1,8) as string[];
   const candle:Candle={ts,closeTime:ts+BARS[o.resolution],open:open!,high:high!,low:low!,close:close!,volume:{vol:vol!,volCcy:volCcy!,volCcyQuote:volCcyQuote!,units:o.product==='spot'?{vol:'base',volCcy:'quote',volCcyQuote:'quote'}:{vol:'contracts',volCcy:'base',volCcyQuote:'quote'}}};
   const prior=candleMap.get(ts); if(prior && hashJson(prior)!==hashJson(candle)) { conflicts.add(ts); candleMap.delete(ts); issue(`candle_conflict:${ts}`); } else if(!conflicts.has(ts)) candleMap.set(ts,candle);
@@ -108,6 +110,7 @@ export function saveHistory(db:Db,m:HistoryManifest):string {
   db.prepare('INSERT INTO history_manifests(id,attempt_id,content,content_sha256) VALUES(?,?,?,?)').run(id,m.request.attemptId??null,content,hash); return id; });
 }
 export function getHistory(db:Db,id:string):HistoryManifest|null {
+ if (!db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='history_manifests'").get()) inTransaction(db,()=>migrate(db));
  const row=db.prepare('SELECT content,content_sha256 FROM history_manifests WHERE id=?').get(id) as {content:string;content_sha256:string}|undefined;
  if(!row)return null; if(sha256(row.content)!==row.content_sha256||id!==`history_${row.content_sha256}`) throw Error('history integrity failure'); return JSON.parse(row.content) as HistoryManifest;
 }
