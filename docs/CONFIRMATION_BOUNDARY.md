@@ -1,0 +1,25 @@
+# 本机可信确认边界
+
+风险配置、受管账户基准、交易卡、风险事件恢复和实盘启用是不同确认事项。批准须绑定冻结内容、账户范围、注册站点、demo/live、版本、完整内容哈希与有效期；任何研究报告或请求正文中的 `approved: true` 都不构成批准。确认本身也不授予下单权，提交前仍要通过策略、账户、风险、保护与幂等检查。
+
+## Windows 系统交互适配器
+
+`src/control/windows-presence.ts` 通过固定本地 `windows-presence.ps1` 启动独立交互窗口。完整冻结内容及 SHA-256 在窗口中显示；用户选择确认后，再调用 Windows `UserConsentVerifier.RequestVerificationAsync`。只有系统返回 Verified、内部挑战匹配、哈希一致并且未过期，后端适配器才返回 verified。拒绝、未知格式、进程异常、缺少验证设备或不支持的平台均不能产生批准。
+
+内容通过子进程 stdin 传递，不放入命令参数或临时文件；stdout 仅传内部挑战关联的固定状态，stderr 不向模型或公共日志转发。适配器的 `runWorker` 注入仅用于后端内部合成测试，不能由 CLI、MCP 或 HTTP 请求配置。不得向研究工具提供原始验证结果写入入口。
+
+本机检查能力可在不弹出确认窗口的情况下运行：
+
+```powershell
+powershell.exe -NoLogo -NoProfile -NonInteractive -STA -File src/control/windows-presence.ps1 -Mode Check
+```
+
+本轮实际能力检查返回 unavailable；系统 WinRT 只读检查返回 DeviceNotPresent。**尚无真实用户完成系统确认的证据。** 需要用户在系统中配置受支持的 Windows Hello/PIN/验证能力后再实际验收。程序不得回退为模型自报、普通请求布尔值或脚本输入的“同意”。
+
+## 信任模型与验证范围
+
+受控后端拥有确认状态、冻结内容和本机适配器；研究入口只得到允许公开的状态。该边界用于阻止研究请求伪造批准，不宣称能抵御拥有同一系统账号、可修改程序或数据库的恶意进程；这一操作系统边界沿用 ADR-002。
+
+已运行合成测试验证不支持平台、完整内容/挑战匹配、哈希修改、缺失/伪造结果、拒绝、异常、交互中过期和时钟失效，未自动化点击任何真实批准窗口。尚待确认持久化、可信账户注册、风险配置、交易卡、提交前检查和受控执行模块联通后，才能验收完整人工确认链路。系统验证能力缺失不会阻止其他只读研究与独立开发。
+
+相关约束：[INVARIANTS](INVARIANTS.md)、[架构决策](DECISIONS.md)、[M1 进度](M1_IMPLEMENTATION.md)。
