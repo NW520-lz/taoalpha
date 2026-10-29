@@ -332,3 +332,43 @@ test("frozen content/hash integrity is rechecked after prompt and corrupted reco
     assert.equal(db.prepare("SELECT COUNT(*) AS n FROM confirmation_receipts").get()!.n, 0);
   } finally { db.close(); }
 });
+
+test("own JSON __proto__ keys reject before lossy validation can collapse distinct subjects", () => {
+  const db = openDb(":memory:");
+  try {
+    const service = createConfirmationService(db, { reviewAndVerify: async () => ({ status: "denied" }) }, () => AT);
+    const ordinary = subject({ payload: { value: "synthetic" } });
+    const proposal = service.propose({ requestRef: "request:exact-original", subject: ordinary });
+    const direct = JSON.parse('{"value":"synthetic","__proto__":{"note":"synthetic-proto-private-sentinel"}}');
+    assert.equal(Object.hasOwn(direct, "__proto__"), true);
+    assert.notEqual(hashJson(subject({ payload: direct })), proposal.subjectHash);
+    for (const payload of [direct, { nested: direct }, { nested: [direct] }]) {
+      assert.throws(() => service.propose({ requestRef: "request:exact-original", subject: subject({ payload }) }), (error: unknown) => {
+        assert.ok(error instanceof DomainError);
+        assert.equal(error.code, "INVALID_INPUT");
+        assert.doesNotMatch(error.message + JSON.stringify(error), /sentinel|__proto__/);
+        return true;
+      });
+    }
+    assert.deepEqual(service.propose({ requestRef: "request:exact-original", subject: ordinary }), proposal);
+    assert.equal(service.getRequest(proposal.requestId).status, "pending");
+  } finally { db.close(); }
+});
+
+test("array subclasses cannot rewrite frozen subject content through overridden serialization methods", () => {
+  const db = openDb(":memory:");
+  try {
+    class RewrittenArray extends Array<string> {}
+    Object.defineProperty(RewrittenArray.prototype, "map", { value: () => ["0"] });
+    const terms = new RewrittenArray("synthetic-original-condition-sentinel");
+    assert.equal(Array.isArray(terms), true);
+    assert.equal(terms[0], "synthetic-original-condition-sentinel");
+    const service = createConfirmationService(db, { reviewAndVerify: async () => ({ status: "denied" }) }, () => AT);
+    assert.throws(() => service.propose({ requestRef: "request:rewritten-array", subject: subject({ payload: { terms } }) }), (error: unknown) => {
+      assert.ok(error instanceof DomainError);
+      assert.equal(error.code, "INVALID_INPUT");
+      assert.doesNotMatch(error.message + JSON.stringify(error), /sentinel|terms|original-condition/);
+      return true;
+    });
+  } finally { db.close(); }
+});

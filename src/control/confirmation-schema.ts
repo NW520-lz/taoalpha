@@ -73,12 +73,15 @@ function assertJson(value: unknown, ancestors = new Set<object>(), depth = 0): v
   if (typeof value === "number") { if (!Number.isFinite(value)) invalid(); return; }
   if (!value || typeof value !== "object" || ancestors.has(value)) invalid();
   const array = Array.isArray(value);
+  // Subclasses can override methods used by canonicalJson and rewrite reviewed content.
+  if (array && Object.getPrototypeOf(value) !== Array.prototype) invalid();
   if (!array && Object.getPrototypeOf(value) !== Object.prototype && Object.getPrototypeOf(value) !== null) invalid();
   ancestors.add(value);
   if (array && Object.keys(value).length !== value.length) invalid();
   for (const key of Reflect.ownKeys(value)) {
     if (array && key === "length") continue;
-    if (typeof key !== "string") invalid();
+    // Zod records may omit this own JSON key; never approve a lossy projection.
+    if (typeof key !== "string" || key === "__proto__") invalid();
     if (array && (!/^(0|[1-9]\d*)$/.test(key) || Number(key) >= value.length)) invalid();
     const descriptor = Object.getOwnPropertyDescriptor(value, key)!;
     if (!descriptor.enumerable || !("value" in descriptor)) invalid();
@@ -93,7 +96,9 @@ export function parseConfirmationProposal(input: unknown): { requestRef: string;
     assertJson(input);
     const parsed = proposalSchema.safeParse(input);
     if (!parsed.success || Buffer.byteLength(canonicalJson(parsed.data.subject.payload), "utf8") > 65536) invalid();
-    return JSON.parse(canonicalJson(parsed.data)) as { requestRef: string; subject: ConfirmationSubject };
+    const originalJson = canonicalJson(input);
+    if (originalJson !== canonicalJson(parsed.data)) invalid();
+    return JSON.parse(originalJson) as { requestRef: string; subject: ConfirmationSubject };
   } catch { invalid(); }
 }
 
