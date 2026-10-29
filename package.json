@@ -11,6 +11,7 @@
   "scripts": {
     "test": "node --test \"test/**/*.test.ts\"",
     "test:live": "node --test \"test-live/**/*.live.ts\"",
+    "test:demo-session": "node --test test-live/okx-demo-session.integration.ts",
     "typecheck": "tsc -p .",
     "okx": "node src/main.ts",
     "demo:check": "node src/demo-main.ts",
