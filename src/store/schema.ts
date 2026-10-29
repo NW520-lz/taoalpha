@@ -70,4 +70,63 @@ export const SCHEMA: string[] = [
     submitted_sha256 TEXT,
     UNIQUE (run_id, role)
   )`,
+  `CREATE TABLE IF NOT EXISTS risk_loss_scopes (
+    id TEXT PRIMARY KEY,
+    policy_id TEXT NOT NULL,
+    policy_version INTEGER NOT NULL,
+    policy_hash TEXT NOT NULL,
+    policy_json TEXT NOT NULL,
+    baseline_ref TEXT NOT NULL,
+    baseline_at TEXT NOT NULL,
+    baseline_ms INTEGER NOT NULL
+  )`,
+  `CREATE TRIGGER IF NOT EXISTS risk_loss_scopes_no_update BEFORE UPDATE ON risk_loss_scopes
+    BEGIN SELECT RAISE(ABORT, 'risk loss scope is immutable'); END`,
+  `CREATE TRIGGER IF NOT EXISTS risk_loss_scopes_no_delete BEFORE DELETE ON risk_loss_scopes
+    BEGIN SELECT RAISE(ABORT, 'risk loss scope is immutable'); END`,
+  `CREATE TABLE IF NOT EXISTS risk_capital_events (
+    id TEXT PRIMARY KEY,
+    scope_id TEXT NOT NULL REFERENCES risk_loss_scopes(id),
+    exchange_ref TEXT NOT NULL,
+    kind TEXT NOT NULL CHECK (kind IN ('deposit', 'withdrawal')),
+    amount_usdt TEXT NOT NULL,
+    occurred_at TEXT NOT NULL,
+    occurred_ms INTEGER NOT NULL,
+    input_hash TEXT NOT NULL,
+    UNIQUE (scope_id, exchange_ref)
+  )`,
+  `CREATE TRIGGER IF NOT EXISTS risk_capital_events_no_update BEFORE UPDATE ON risk_capital_events
+    BEGIN SELECT RAISE(ABORT, 'capital event is immutable'); END`,
+  `CREATE TRIGGER IF NOT EXISTS risk_capital_events_no_delete BEFORE DELETE ON risk_capital_events
+    BEGIN SELECT RAISE(ABORT, 'capital event is immutable'); END`,
+  `CREATE TABLE IF NOT EXISTS risk_equity_observations (
+    id TEXT PRIMARY KEY,
+    scope_id TEXT NOT NULL REFERENCES risk_loss_scopes(id),
+    source_ref TEXT NOT NULL,
+    observed_at TEXT NOT NULL,
+    observed_ms INTEGER NOT NULL,
+    equity_usdt TEXT NOT NULL,
+    account_reconciled INTEGER NOT NULL CHECK (account_reconciled IN (0, 1)),
+    capital_history_reconciled INTEGER NOT NULL CHECK (capital_history_reconciled IN (0, 1)),
+    input_hash TEXT NOT NULL,
+    result_json TEXT NOT NULL,
+    UNIQUE (scope_id, source_ref)
+  )`,
+  `CREATE TRIGGER IF NOT EXISTS risk_equity_observations_no_update BEFORE UPDATE ON risk_equity_observations
+    BEGIN SELECT RAISE(ABORT, 'equity observation is immutable'); END`,
+  `CREATE TRIGGER IF NOT EXISTS risk_equity_observations_no_delete BEFORE DELETE ON risk_equity_observations
+    BEGIN SELECT RAISE(ABORT, 'equity observation is immutable'); END`,
+  `CREATE TABLE IF NOT EXISTS risk_loss_events (
+    id TEXT PRIMARY KEY,
+    scope_id TEXT NOT NULL REFERENCES risk_loss_scopes(id),
+    observation_id TEXT NOT NULL REFERENCES risk_equity_observations(id),
+    kind TEXT NOT NULL CHECK (kind IN ('review', 'soft_pause', 'hard_stop')),
+    loss_usdt TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    UNIQUE (observation_id, kind)
+  )`,
+  `CREATE TRIGGER IF NOT EXISTS risk_loss_events_no_update BEFORE UPDATE ON risk_loss_events
+    BEGIN SELECT RAISE(ABORT, 'risk loss event is immutable'); END`,
+  `CREATE TRIGGER IF NOT EXISTS risk_loss_events_no_delete BEFORE DELETE ON risk_loss_events
+    BEGIN SELECT RAISE(ABORT, 'risk loss event is immutable'); END`,
 ];
