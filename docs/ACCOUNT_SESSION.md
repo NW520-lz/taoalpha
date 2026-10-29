@@ -10,4 +10,6 @@
 
 测试使用合成账户、实际 SQLite 关闭/重开、双会话与故障替身。真实 demo 验证只输出连接和安全状态，不输出账户标识、金额或仓位。需要真实用户确认的账户基准与风险配置仍待可信入口接入。
 
+配置本机 demo profile 后，可显式运行 `npm run test:demo-session`：它使用内存数据库进行三轮只读刷新。运行结果见[版本化验证记录](validation/2026-10-29-demo-account-session.md)；该命令不属于默认测试或公共行情 live 测试。
+
 相关资料：[M1 开发记录](M1_IMPLEMENTATION.md)、[确认边界](CONFIRMATION_BOUNDARY.md)、[不可破坏约束](INVARIANTS.md)。
