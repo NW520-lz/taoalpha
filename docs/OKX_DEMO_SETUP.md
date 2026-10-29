@@ -8,9 +8,9 @@
 
 ```toml
 [profiles.taoalpha_demo]
-api_key = "REPLACE_LOCALLY"
-secret_key = "REPLACE_LOCALLY"
-passphrase = "REPLACE_LOCALLY"
+api_key = ""       # 在本机填写
+secret_key = ""    # 在本机填写
+passphrase = ""    # 在本机填写
 demo = true
 site = "REPLACE_WITH_REGISTERED_SITE"
 ```
