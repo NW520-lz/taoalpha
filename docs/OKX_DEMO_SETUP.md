@@ -13,7 +13,17 @@ secret_key = ""    # 在本机填写
 passphrase = ""    # 在本机填写
 demo = true
 site = "REPLACE_WITH_REGISTERED_SITE"
+
+# 可选：实盘凭证独立保存；当前 TaoAlpha 不读取此 profile、不启用实盘交易。
+[profiles.taoalpha_live]
+api_key = ""
+secret_key = ""
+passphrase = ""
+demo = false
+site = "REPLACE_WITH_REGISTERED_SITE"
 ```
+
+两套 API 凭证分别在对应环境创建，不能混用。`demo:check` 必须选用 `taoalpha_demo`，选择 `demo = false` 的 profile 会被拒绝。交易所返回 `50101` 表示 API Key 与请求环境不匹配，应核对模拟环境凭证，而不是把检查改成实盘。
 
 `site` 必须使用账户实际注册站点，不能按当前 IP 猜测：
 
@@ -34,9 +44,13 @@ site = "REPLACE_WITH_REGISTERED_SITE"
 npm run demo:check -- --profile taoalpha_demo --site global
 ```
 
-输出只包含 demo 环境、各读取项状态、页数与记录数，不展示余额、账户标识、订单号或仓位正文。缺少本机配置时返回 `tradekit.profile_readable`；站点、demo 标记、版本、权限或读取项有问题时返回明确失败，退出码为 1。
+输出只包含 demo 环境、各读取项状态、页数、记录数及 `accountValidation` 固定校验状态/规则，不展示余额、账户标识、订单号或仓位正文。`ok` 同时要求读取完整与字段归一校验成功；接口可读取但字段、来源或时效无效也返回失败。缺少本机配置时返回 `tradekit.profile_readable`；站点、demo 标记、版本、权限或读取项有问题时返回明确失败，退出码为 1。
 
-即使各项读取完成，输出仍是 `reconciled: false`、`executionAuthorized: false`：外部资金流水、受管/手动仓位归属、账户模式和自动追加保证金状态尚待完整核对。当前接口没有将“API 可读取”转换成交易批准，也没有真实 demo 订单验收。
+即使各项读取和字段校验完成，输出仍是 `reconciled: false`、`executionAuthorized: false`、`blockNewRisk: true`：外部资金流水、受管/手动仓位归属、自动追加保证金、合约估值、保护覆盖与已确认风险配置尚待完整核对。识别账户模式不等于已经验证其适合执行。当前接口没有将“API 可读取”转换成交易批准，也没有真实 demo 订单验收。
+
+归一化数据只保留在后端内存。账户 `totalEq` 是 **USD 权益**，不能当成受管 USDT 本金或直接用于累计盈亏账本；币种权益保留币种单位，永续仓位数量保留合约张数，未用缺失的合约面值推算币数量。数值使用十进制字符串，缺失值不会补成零。
+
+来源校验要求各页端点匹配固定 GET 路径。读取观察时间 `requestTime` 最多早于检查时刻 30 秒、最多超前 5 秒，边界包含；这是本机读取时效校验，不是交易所时钟证明。余额和仓位 `uTime` 是交易所最后更新时间，未变化账户可有较早时间，不按读取时效误判。多接口读取也不代表原子账户快照。
 
 ## 固定版本与验证边界
 
@@ -46,3 +60,5 @@ npm run demo:check -- --profile taoalpha_demo --site global
 - 自动化已覆盖合成数据读取、完整分页/重复页、错误不当空结果、环境/端点/版本错误、输出脱敏，以及真实已安装 MCP 进程的本机握手。该握手使用合成凭证且不访问交易所；它不能替代真实 demo 账户读取和订单闭环。
 
 完整 M1 开发进度见 [M1_IMPLEMENTATION.md](M1_IMPLEMENTATION.md)，执行与风险规则见 [INVARIANTS.md](INVARIANTS.md)。
+
+本次实际运行结果见[账户字段归一验证记录](validation/2026-10-28-m1-account-readonly.md)，不代表后续任意时刻的连接状态或完整 M1 验收。
