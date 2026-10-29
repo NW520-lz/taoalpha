@@ -2,6 +2,16 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createWindowsPresence } from "../../src/control/windows-presence.ts";
 import { hashJson } from "../../src/lib/hash.ts";
+import { execFileSync } from "node:child_process";
+import { fileURLToPath } from "node:url";
+import { join } from "node:path";
+
+test("desktop native probe compiles and activates the interop factory, rejecting invalid owners without UI", { skip: process.platform !== "win32" }, () => {
+  const script = fileURLToPath(new URL("../../src/control/windows-presence.ps1", import.meta.url));
+  const executable = join(process.env.SystemRoot ?? "C:\\Windows", "System32", "WindowsPowerShell", "v1.0", "powershell.exe");
+  const result = execFileSync(executable, ["-NoLogo", "-NoProfile", "-NonInteractive", "-STA", "-File", script, "-Mode", "Probe"], { windowsHide: true, encoding: "utf8", timeout: 30000 });
+  assert.deepEqual(JSON.parse(result), { status: "ready", factoryActivated: true, invalidWindowRejected: true });
+});
 
 test("unsupported platforms cannot approve and never start a native process", async () => {
   let calls = 0;

@@ -4,7 +4,7 @@
 
 ## Windows 系统交互适配器
 
-`src/control/windows-presence.ts` 通过固定本地 `windows-presence.ps1` 启动独立交互窗口。完整冻结内容及 SHA-256 在窗口中显示；用户选择确认后，再调用 Windows `UserConsentVerifier.RequestVerificationAsync`。只有系统返回 Verified、内部挑战匹配、哈希一致并且未过期，后端适配器才返回 verified。拒绝、未知格式、进程异常、缺少验证设备或不支持的平台均不能产生批准。
+`src/control/windows-presence.ts` 通过固定本地 `windows-presence.ps1` 启动独立交互窗口。完整冻结内容及 SHA-256 在窗口中显示；用户选择确认后，桌面程序使用窗口句柄调用 Windows `IUserConsentVerifierInterop.RequestVerificationForWindowAsync`。验证期间窗口保持存活，结果在界面线程异步处理。只有系统返回 Verified、内部挑战匹配、哈希一致并且未过期，后端适配器才返回 verified。拒绝、未知格式、进程异常、缺少验证设备或不支持的平台均不能产生批准。
 
 内容通过子进程 stdin 传递，不放入命令参数或临时文件；stdout 仅传内部挑战关联的固定状态，stderr 不向模型或公共日志转发。适配器的 `runWorker` 注入仅用于后端内部合成测试，不能由 CLI、MCP 或 HTTP 请求配置。不得向研究工具提供原始验证结果写入入口。
 
@@ -14,7 +14,7 @@
 powershell.exe -NoLogo -NoProfile -NonInteractive -STA -File src/control/windows-presence.ps1 -Mode Check
 ```
 
-本轮实际能力检查返回 unavailable；系统 WinRT 只读检查返回 DeviceNotPresent。**尚无真实用户完成系统确认的证据。** 需要用户在系统中配置受支持的 Windows Hello/PIN/验证能力后再实际验收。程序不得回退为模型自报、普通请求布尔值或脚本输入的“同意”。
+本轮实际能力检查返回 unavailable；系统 WinRT 只读检查返回 DeviceNotPresent。桌面互操作的非交互探测可编译并初始化工厂，且拒绝无效窗口句柄；这不证明真人验证流程已经成功。**尚无真实用户完成系统确认的证据。** 需要用户在系统中配置受支持的 Windows Hello/PIN/验证能力后再实际验收。程序不得回退为模型自报、普通请求布尔值或脚本输入的“同意”。
 
 ## 信任模型与验证范围
 
