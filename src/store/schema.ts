@@ -212,6 +212,14 @@ export const MIGRATION_4: string[] = [
 /** Migration 5: old writers cannot insert an observation older than known capital. */
 export const MIGRATION_5: string[] = [
  `CREATE TRIGGER IF NOT EXISTS risk_observation_before_capital_guard BEFORE INSERT ON risk_equity_observations
-  WHEN EXISTS (SELECT 1 FROM risk_capital_events WHERE scope_id=NEW.scope_id AND occurred_ms>NEW.observed_ms)
-  BEGIN SELECT RAISE(ABORT,'observation predates known capital'); END`,
+  WHEN EXISTS (SELECT 1 FROM risk_capital_events WHERE scope_id=NEW.scope_id AND occurred_ms>=NEW.observed_ms)
+  BEGIN SELECT RAISE(ABORT,'observation does not follow known capital'); END`,
+];
+
+/** Migration 6 updates already-installed version 5 guards to reject equal timestamps. */
+export const MIGRATION_6: string[] = [
+ `DROP TRIGGER IF EXISTS risk_observation_before_capital_guard`,
+ `CREATE TRIGGER risk_observation_before_capital_guard BEFORE INSERT ON risk_equity_observations
+  WHEN EXISTS (SELECT 1 FROM risk_capital_events WHERE scope_id=NEW.scope_id AND occurred_ms>=NEW.observed_ms)
+  BEGIN SELECT RAISE(ABORT,'observation does not follow known capital'); END`,
 ];

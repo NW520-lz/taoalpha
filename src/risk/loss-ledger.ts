@@ -128,8 +128,8 @@ export function observeEquity(db: Db, input: {
     if (observedMs < scope.baseline_ms) {
       throw new DomainError("INVALID_INPUT", "equity observation precedes the baseline", [{ ruleId: "risk.observation_after_baseline", field: "observedAt" }]);
     }
-    if (getRow(db, "SELECT id FROM risk_capital_events WHERE scope_id = ? AND occurred_ms > ? LIMIT 1", scopeId, observedMs)) {
-      throw new DomainError("DATA_NOT_READY", "observation predates a known capital event", [{ ruleId: "risk.observation_before_capital", field: "observedAt" }]);
+    if (getRow(db, "SELECT id FROM risk_capital_events WHERE scope_id = ? AND occurred_ms >= ? LIMIT 1", scopeId, observedMs)) {
+      throw new DomainError("DATA_NOT_READY", "observation does not follow all known capital events", [{ ruleId: "risk.observation_before_capital", field: "observedAt" }]);
     }
     const duplicate = getRow<ObservationRow>(db, "SELECT id, input_hash, result_json, observed_ms FROM risk_equity_observations WHERE scope_id = ? AND source_ref = ?", scopeId, sourceRef);
     if (duplicate) {

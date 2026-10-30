@@ -149,7 +149,24 @@ test("a newly recorded capital event after the latest observation makes that rep
   recordConfirmedCapitalEvent(db,{scopeId,exchangeRef:'newer-capital',kind:'deposit',amountUsdt:'50',occurredAt:'2026-10-28T00:02:00Z'});
   const replay={scopeId,sourceRef:'snapshot-1',observedAt:first.observedAt,equityUsdt:'500',accountReconciled:true,capitalHistoryReconciled:true};
   expectDomainError(()=>observeEquity(db,replay),'DATA_NOT_READY',{ruleId:'risk.observation_before_capital'});
-  const next=observe('550');assert.equal(next.netPnlUsdt,'0');assert.equal(next.blockNewRisk,false);db.close();
+  const next=observe('550',{observedAt:'2026-10-28T00:02:00.001Z'});assert.equal(next.netPnlUsdt,'0');assert.equal(next.blockNewRisk,false);db.close();
+});
+
+test("capital recorded first at the same time as an observation makes that observation unusable",()=>{
+  const {db,scopeId}=setup();
+  recordConfirmedCapitalEvent(db,{scopeId,exchangeRef:'equal',kind:'deposit',amountUsdt:'50',occurredAt:'2026-10-28T00:01:00Z'});
+  const equal={scopeId,sourceRef:'equal',observedAt:'2026-10-28T00:01:00Z',equityUsdt:'500',accountReconciled:true,capitalHistoryReconciled:true};
+  expectDomainError(()=>observeEquity(db,equal),'DATA_NOT_READY',{ruleId:'risk.observation_before_capital'});
+  const after=observeEquity(db,{...equal,sourceRef:'after',observedAt:'2026-10-28T00:01:00.001Z',equityUsdt:'550'});
+  assert.equal(after.netPnlUsdt,'0');assert.equal(after.blockNewRisk,false);db.close();
+});
+
+test("capital recorded after an observation at the same time creates a durable late lock",()=>{
+  const {db,scopeId,observe}=setup(); const first=observe('500');
+  recordConfirmedCapitalEvent(db,{scopeId,exchangeRef:'equal',kind:'deposit',amountUsdt:'50',occurredAt:first.observedAt});
+  const replay={scopeId,sourceRef:'snapshot-1',observedAt:first.observedAt,equityUsdt:'500',accountReconciled:true,capitalHistoryReconciled:true};
+  expectDomainError(()=>observeEquity(db,replay),'DATA_NOT_READY',{ruleId:'risk.capital_history_late'});
+  assert.equal(db.prepare('SELECT reason FROM risk_capital_reconciliation_locks WHERE scope_id=?').get(scopeId)?.reason,'late_capital');db.close();
 });
 
 test("an observation before already-recorded capital cannot be used as a current risk result",()=>{
@@ -159,7 +176,7 @@ test("an observation before already-recorded capital cannot be used as a current
   expectDomainError(()=>observeEquity(db,before),'DATA_NOT_READY',{ruleId:'risk.observation_before_capital'});
   db.prepare("INSERT INTO risk_loss_write_authorizations (id,scope_id,kind) VALUES (?,?,'observation')").run('old-style',scopeId);
   assert.throws(()=>db.prepare("INSERT INTO risk_equity_observations (id,scope_id,source_ref,observed_at,observed_ms,equity_usdt,account_reconciled,capital_history_reconciled,input_hash,result_json) VALUES (?,?,?,?,?,?,?,?,?,?)")
-    .run('old-style',scopeId,'legacy','2026-10-28T00:01:00Z',Date.parse('2026-10-28T00:01:00Z'),'500',1,1,'hash','{}'),/observation predates known capital/);
+    .run('old-style',scopeId,'legacy','2026-10-28T00:01:00Z',Date.parse('2026-10-28T00:01:00Z'),'500',1,1,'hash','{}'),/observation does not follow known capital/);
   const after=observeEquity(db,{...before,sourceRef:'after',observedAt:'2026-10-28T00:03:00Z',equityUsdt:'550'});
   assert.equal(after.netPnlUsdt,'0');assert.equal(after.blockNewRisk,false);db.close();
 });
@@ -179,6 +196,24 @@ test("migration 5 installs the future-capital guard on a v4 database without rew
   assert.equal(saved.netPnlUsdt,'0');
   const after=observeEquity(db,{...before,sourceRef:'after',observedAt:'2026-10-28T00:03:00Z',equityUsdt:'550'});
   assert.equal(after.netPnlUsdt,'0');assert.equal(after.blockNewRisk,false);db.close();
+});
+
+test("migration 6 replaces the earlier v5 guard so equal-time old-style writes are rejected",(t)=>{
+  const dir=mkdtempSync(join(tmpdir(),'taoalpha-capital-v6-'));const resolved=realpathSync(dir);const rel=relative(realpathSync(tmpdir()),resolved);
+  assert.ok(rel && !rel.startsWith('..') && !isAbsolute(rel));t.after(()=>rmSync(resolved,{recursive:true,force:true}));
+  const path=join(resolved,'ledger.db');let db=openDb(path);
+  initializeLossScope(db,{scopeId:'scope',policy,baselineRef:'baseline',at:'2026-10-28T00:00:00Z'});
+  recordConfirmedCapitalEvent(db,{scopeId:'scope',exchangeRef:'capital',kind:'deposit',amountUsdt:'1',occurredAt:'2026-10-28T00:01:00Z'});
+  db.exec(`DROP TRIGGER risk_observation_before_capital_guard;
+    CREATE TRIGGER risk_observation_before_capital_guard BEFORE INSERT ON risk_equity_observations
+    WHEN EXISTS (SELECT 1 FROM risk_capital_events WHERE scope_id=NEW.scope_id AND occurred_ms>NEW.observed_ms)
+    BEGIN SELECT RAISE(ABORT,'old guard'); END;
+    DELETE FROM schema_migrations WHERE version=6`);db.close();
+  db=openDb(path);db.prepare("INSERT INTO risk_loss_write_authorizations (id,scope_id,kind) VALUES (?,?,'observation')").run('old-equal','scope');
+  assert.throws(()=>db.prepare("INSERT INTO risk_equity_observations (id,scope_id,source_ref,observed_at,observed_ms,equity_usdt,account_reconciled,capital_history_reconciled,input_hash,result_json) VALUES (?,?,?,?,?,?,?,?,?,?)")
+    .run('old-equal','scope','old-source','2026-10-28T00:01:00Z',Date.parse('2026-10-28T00:01:00Z'),'501',1,1,'hash','{}'),/observation does not follow known capital/);
+  assert.equal(db.prepare('SELECT COUNT(*) AS n FROM risk_capital_events').get()?.n,1);
+  db.close();
 });
 
 test("even the latest observation cannot replay as active if a later risk event exists",()=>{
