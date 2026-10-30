@@ -5,6 +5,7 @@ import {collectHistory,saveHistory} from '../../src/market/history.ts';
 import {createExperimentRegistry} from '../../src/research/experiment-registry.ts';
 import {inspectExperimentHistory} from '../../src/research/experiment-history.ts';
 import type {PublicClient} from '../../src/okx/public-client.ts';
+import {expectDomainError} from '../helpers/assertions.ts';
 const now=()=>new Date('2026-01-01T00:00:00.000Z');
 const row=(t:number)=>[String(t),'1','1','1','1','0','0','0','1'];
 const client:PublicClient={site:'global',async get<T>(path:string){const rows=[row(120000),row(60000),row(0)] as T[];return {ok:true as const,endpoint:path,rows,raw:{endpoint:path,receivedAt:'1970-01-02T00:00:00.000Z',status:200,body:JSON.stringify(rows)}}}};
@@ -24,7 +25,8 @@ test('caller scope mismatch and missing or modified registry data fail closed',a
  const {db,registry}=await setup();try {
  for(const changed of [{site:'us'},{instId:'ETH-USDT'},{product:'usdt_perpetual'},{resolution:'5m'}]) assert.throws(()=>inspectExperimentHistory(db,registry,{experimentId:'experiment:one',version:1,expected:{...expected,...changed}}));
  assert.throws(()=>inspectExperimentHistory(db,registry,{experimentId:'missing',version:1,expected}));
- db.exec("DROP TRIGGER history_manifests_no_update; UPDATE history_manifests SET content_sha256='bad'");assert.throws(()=>inspectExperimentHistory(db,registry,{experimentId:'experiment:one',version:1,expected}));
+ db.exec("DROP TRIGGER history_manifests_no_update; UPDATE history_manifests SET content_sha256='bad'");
+ expectDomainError(()=>inspectExperimentHistory(db,registry,{experimentId:'experiment:one',version:1,expected}),'PERSISTENCE_UNAVAILABLE');
  }finally{db.close()}
 });
 

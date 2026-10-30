@@ -22,7 +22,10 @@ export function inspectExperimentHistory(db:Db,registry:Pick<ReturnType<typeof c
    const registration=registry.get(experimentId,version); if(!registration) fail();
    const data=registration.data;
    if(!/^history_[a-f0-9]{64}$/.test(data.reference) || data.reference!==`history_${data.sha256}` || !db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='history_manifests'").get()) fail();
-   const rawManifest=getHistory(db,data.reference); if(!rawManifest || hashJson(rawManifest)!==data.sha256) fail();
+   let rawManifest:ReturnType<typeof getHistory>;
+   try { rawManifest=getHistory(db,data.reference); } catch { return fail('PERSISTENCE_UNAVAILABLE'); }
+   if(!rawManifest) fail();
+   if(hashJson(rawManifest)!==data.sha256) fail('PERSISTENCE_UNAVAILABLE');
    const parsed=manifestSchema.safeParse(rawManifest);if(!parsed.success) fail(); const m=parsed.data;
    if(m.parsingVersion!==data.version || m.site!==expected.site || m.request.instId!==expected.instId || m.request.product!==expected.product || m.request.resolution!==expected.resolution || (m.request.product==='spot' ? m.request.instId.endsWith('-SWAP') : !m.request.instId.endsWith('-SWAP')) || (m.request.product==='spot' ? m.funding.status!=='not_applicable' : m.funding.status!=='unknown')) fail();
    for(const s of m.sources) if((s.body===null)!==(s.sha256===null) || (s.body!==null && sha256(s.body)!==s.sha256)) fail();
