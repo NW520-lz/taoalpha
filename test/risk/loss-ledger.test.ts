@@ -2,6 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
+import { spawnSync } from "node:child_process";
 import { isAbsolute, join, relative } from "node:path";
 import { openDb, type Db } from "../../src/store/db.ts";
 import { SCHEMA } from "../../src/store/schema.ts";
@@ -61,6 +62,29 @@ test("old-version writers cannot insert observations or capital into a current s
   assert.throws(() => db.prepare("INSERT INTO risk_capital_events (id, scope_id, exchange_ref, kind, amount_usdt, occurred_at, occurred_ms, input_hash) VALUES (?, ?, ?, ?, ?, ?, ?, ?)")
     .run("old-version-capital", scopeId, "old-capital", "deposit", "1", "2026-10-28T00:00:10Z", Date.parse("2026-10-28T00:00:10Z"), "hash"), /arithmetic write guard/);
   db.close();
+});
+
+test("a separate old-style process cannot write to a current ledger", (t) => {
+  const directory = mkdtempSync(join(tmpdir(), "taoalpha-old-writer-"));
+  const resolved = realpathSync(directory);
+  const withinTemp = relative(realpathSync(tmpdir()), resolved);
+  assert.ok(withinTemp && !withinTemp.startsWith("..") && !isAbsolute(withinTemp));
+  const path = join(resolved, "ledger.db");
+  const db = openDb(path);
+  t.after(() => { db.close(); rmSync(resolved, { recursive: true, force: true }); });
+  initializeLossScope(db, { scopeId: "scope", policy, baselineRef: "b", at: "2026-10-28T00:00:00Z" });
+  const oldWriter = `import { DatabaseSync } from 'node:sqlite';
+    const db = new DatabaseSync(process.argv[1]);
+    try {
+      db.prepare("INSERT INTO risk_equity_observations (id, scope_id, source_ref, observed_at, observed_ms, equity_usdt, account_reconciled, capital_history_reconciled, input_hash, result_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
+        .run('old-id', 'scope', 'old-source', '2026-10-28T00:01:00Z', 1793145660000, '500', 1, 1, 'hash', '{}');
+      process.exitCode = 2;
+    } catch (error) {
+      if (!String(error).includes('risk arithmetic write guard')) process.exitCode = 3;
+    } finally { db.close(); }`;
+  const child = spawnSync(process.execPath, ["--input-type=module", "-e", oldWriter, path], { encoding: "utf8", timeout: 10000 });
+  assert.equal(child.status, 0, child.error?.message ?? child.stderr);
+  assert.equal(db.prepare("SELECT COUNT(*) AS n FROM risk_equity_observations").get()?.n, 0);
 });
 
 test("write authorization and scope markers roll back with their protected records", () => {
