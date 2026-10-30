@@ -21,7 +21,13 @@ type Input=z.infer<typeof schema>;
 export type ExperimentRegistration=Input & {schemaVersion:1;registeredAt:string;contentSha256:string;status:'unvalidated';dataAvailability:'unverified';executionAuthorized:false};
 interface Row {experiment_id:string;version:number;attempt_id:string;content:string;content_sha256:string}
 function fail(code:'INVALID_INPUT'|'IDEMPOTENCY_CONFLICT'|'PERSISTENCE_UNAVAILABLE'='INVALID_INPUT'):never {throw new DomainError(code,'Experiment registration rejected',[{ruleId:'experiment.registration'}])}
-function safe<T>(fn:()=>T):T {try{return fn()}catch(e){if(e instanceof DomainError && e.message==='Experiment registration rejected') throw e; return fail()}}
+function safe<T>(fn:()=>T):T {
+ try{return fn()}catch(e){
+  if(e instanceof DomainError && e.message==='Experiment registration rejected') throw e;
+  if(e instanceof Error && 'code' in e && (e.code==='ERR_SQLITE_ERROR' || e.code==='ERR_INVALID_STATE')) return fail('PERSISTENCE_UNAVAILABLE');
+  return fail();
+ }
+}
 function readInput(raw:unknown):Input {
  // The existing JSON envelope rejects accessors, prototypes, non-JSON values and unsafe keys before Zod can project them.
  const checked=parseConfirmationProposal({requestRef:'input',subject:{version:1,kind:'risk_policy',scopeId:'scope:input',accountRef:'account:input',site:'global',environment:'demo',payload:{input:raw},expiresAt:'2099-01-01T00:00:00Z'}}).subject.payload.input;
@@ -41,6 +47,9 @@ const DDL=[
 export function createExperimentRegistry(db:Db,now:()=>Date) {
  safe(()=>inTransaction(db,()=>{for(const sql of DDL) db.exec(sql)}));
  function parseRow(row:Row):ExperimentRegistration {
+  try { return parseStoredRow(row); } catch { return fail('PERSISTENCE_UNAVAILABLE'); }
+ }
+ function parseStoredRow(row:Row):ExperimentRegistration {
   const parsed=JSON.parse(row.content) as ExperimentRegistration;
   const {contentSha256,...body}=parsed;
   if(canonicalJson(parsed)!==row.content || contentSha256!==row.content_sha256 || sha256(canonicalJson(body))!==contentSha256 || parsed.experimentId!==row.experiment_id || parsed.version!==row.version || parsed.attemptId!==row.attempt_id || parsed.status!=='unvalidated' || parsed.dataAvailability!=='unverified' || parsed.executionAuthorized!==false || parsed.schemaVersion!==1) fail();
