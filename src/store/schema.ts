@@ -177,3 +177,34 @@ export const MIGRATION_3: string[] = [
  `CREATE TRIGGER IF NOT EXISTS submission_conflicts_no_update BEFORE UPDATE ON research_submission_conflicts BEGIN SELECT RAISE(ABORT, 'submission conflicts immutable'); END`,
  `CREATE TRIGGER IF NOT EXISTS submission_conflicts_no_delete BEFORE DELETE ON research_submission_conflicts BEGIN SELECT RAISE(ABORT, 'submission conflicts immutable'); END`,
 ];
+
+/** Migration 4: preserve late-capital reconciliation locks across restarts and older writers. */
+export const MIGRATION_4: string[] = [
+ `CREATE TABLE IF NOT EXISTS risk_capital_reconciliation_locks (
+   scope_id TEXT PRIMARY KEY REFERENCES risk_loss_scopes(id),
+   capital_event_id TEXT NOT NULL REFERENCES risk_capital_events(id),
+   observation_id TEXT NOT NULL REFERENCES risk_equity_observations(id),
+   reason TEXT NOT NULL CHECK(reason IN ('late_capital', 'pre_upgrade_order_unknown'))
+ )`,
+ `CREATE TRIGGER IF NOT EXISTS risk_capital_locks_no_update BEFORE UPDATE ON risk_capital_reconciliation_locks BEGIN SELECT RAISE(ABORT,'capital reconciliation lock immutable'); END`,
+ `CREATE TRIGGER IF NOT EXISTS risk_capital_locks_no_delete BEFORE DELETE ON risk_capital_reconciliation_locks BEGIN SELECT RAISE(ABORT,'capital reconciliation lock immutable'); END`,
+ // Old databases do not record ingestion order across tables. Overlapping historical capital and
+ // observation times are therefore quarantined, even when the original order was actually correct.
+ `INSERT INTO risk_capital_reconciliation_locks(scope_id,capital_event_id,observation_id,reason)
+  SELECT s.id,
+    (SELECT c.id FROM risk_capital_events c WHERE c.scope_id=s.id AND c.occurred_ms <= o.observed_ms ORDER BY c.rowid LIMIT 1),
+    o.id,'pre_upgrade_order_unknown'
+  FROM risk_loss_scopes s JOIN risk_equity_observations o ON o.id=(SELECT x.id FROM risk_equity_observations x WHERE x.scope_id=s.id ORDER BY x.observed_ms DESC LIMIT 1)
+  WHERE EXISTS (SELECT 1 FROM risk_capital_events c WHERE c.scope_id=s.id AND c.occurred_ms <= o.observed_ms)`,
+ `CREATE TRIGGER IF NOT EXISTS risk_late_capital_lock AFTER INSERT ON risk_capital_events
+  WHEN EXISTS (SELECT 1 FROM risk_equity_observations WHERE scope_id=NEW.scope_id AND observed_ms>=NEW.occurred_ms)
+  BEGIN
+   INSERT INTO risk_capital_reconciliation_locks(scope_id,capital_event_id,observation_id,reason)
+    SELECT NEW.scope_id,NEW.id,o.id,'late_capital' FROM risk_equity_observations o
+    WHERE o.scope_id=NEW.scope_id AND o.observed_ms>=NEW.occurred_ms
+    ORDER BY o.observed_ms DESC LIMIT 1 ON CONFLICT(scope_id) DO NOTHING;
+  END`,
+ `CREATE TRIGGER IF NOT EXISTS risk_observation_late_capital_guard BEFORE INSERT ON risk_equity_observations
+  WHEN EXISTS (SELECT 1 FROM risk_capital_reconciliation_locks WHERE scope_id=NEW.scope_id)
+  BEGIN SELECT RAISE(ABORT,'capital reconciliation required'); END`,
+];

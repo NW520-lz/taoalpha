@@ -122,6 +122,106 @@ function setup(scopeId = "synthetic-scope") {
   return { db, policyHash, observe, scopeId };
 }
 
+test("late capital durably blocks replay and new observations while other capital can still be recorded", () => {
+  const {db,scopeId,observe}=setup();
+  const before=observe("500"); assert.equal(before.blockNewRisk,false);
+  const late={scopeId,exchangeRef:"late-deposit",kind:"deposit" as const,amountUsdt:"70",occurredAt:"2026-10-28T00:01:00Z"};
+  const id=recordConfirmedCapitalEvent(db,late); assert.equal(recordConfirmedCapitalEvent(db,late),id);
+  expectDomainError(()=>observeEquity(db,{scopeId,sourceRef:"snapshot-1",observedAt:before.observedAt,equityUsdt:"500",accountReconciled:true,capitalHistoryReconciled:true}),"DATA_NOT_READY",{ruleId:"risk.capital_history_late"});
+  expectDomainError(()=>observe("570"),"DATA_NOT_READY",{ruleId:"risk.capital_history_late"});
+  recordConfirmedCapitalEvent(db,{scopeId,exchangeRef:"later-capital",kind:"withdrawal",amountUsdt:"1",occurredAt:"2026-10-28T00:03:00Z"});
+  assert.equal(db.prepare("SELECT COUNT(*) AS n FROM risk_capital_events").get()?.n,2);
+  assert.throws(()=>db.exec("DELETE FROM risk_capital_reconciliation_locks"),/immutable/);
+  assert.throws(()=>db.exec("UPDATE risk_capital_reconciliation_locks SET reason=reason"),/immutable/);
+  assert.throws(()=>db.exec("INSERT OR REPLACE INTO risk_capital_reconciliation_locks SELECT * FROM risk_capital_reconciliation_locks"),/immutable/);
+  db.close();
+});
+
+test("a prior observation cannot be replayed after a newer hard stop", () => {
+  const {db,scopeId,observe}=setup(); const first=observe("500");
+  assert.equal(observe("370").state,"hard_stopped");
+  expectDomainError(()=>observeEquity(db,{scopeId,sourceRef:"snapshot-1",observedAt:first.observedAt,equityUsdt:"500",accountReconciled:true,capitalHistoryReconciled:true}),"DATA_NOT_READY",{ruleId:"risk.observation_stale"});
+  assert.equal(observe("500").state,"hard_stopped"); db.close();
+});
+
+test("even the latest observation cannot replay as active if a later risk event exists",()=>{
+  const {db,scopeId,observe}=setup();const first=observe("500");
+  db.prepare("INSERT INTO risk_loss_events (id,scope_id,observation_id,kind,loss_usdt,created_at) VALUES (?,?,?,?,?,?)")
+    .run('later-event',scopeId,first.observationId,'hard_stop','120','2026-10-28T00:02:00Z');
+  expectDomainError(()=>observeEquity(db,{scopeId,sourceRef:'snapshot-1',observedAt:first.observedAt,equityUsdt:'500',accountReconciled:true,capitalHistoryReconciled:true}),'DATA_NOT_READY',{ruleId:'risk.observation_stale'});
+  db.close();
+});
+
+test("late-capital lock persists on reopen and is scoped to the affected ledger",(t)=>{
+  const dir=mkdtempSync(join(tmpdir(),"taoalpha-late-capital-")); const resolved=realpathSync(dir); const rel=relative(realpathSync(tmpdir()),resolved);
+  assert.ok(rel && !rel.startsWith("..") && !isAbsolute(rel)); t.after(()=>rmSync(resolved,{recursive:true,force:true}));
+  const path=join(resolved,"ledger.db"); let db=openDb(path);
+  for(const scopeId of ["a","b"]) initializeLossScope(db,{scopeId,policy,baselineRef:`baseline-${scopeId}`,at:"2026-10-28T00:00:00Z"});
+  const observation={scopeId:"a",sourceRef:"before",observedAt:"2026-10-28T00:02:00Z",equityUsdt:"500",accountReconciled:true,capitalHistoryReconciled:true};
+  observeEquity(db,observation);recordConfirmedCapitalEvent(db,{scopeId:"a",exchangeRef:"late",kind:"deposit",amountUsdt:"70",occurredAt:"2026-10-28T00:01:00Z"}); db.close();
+  db=openDb(path); expectDomainError(()=>observeEquity(db,observation),"DATA_NOT_READY",{ruleId:"risk.capital_history_late"});
+  const b=observeEquity(db,{...observation,scopeId:"b"});assert.equal(b.blockNewRisk,false); db.close();
+});
+
+test("failure to persist the late-capital lock rolls back the capital event",()=>{
+  const {db,scopeId,observe}=setup();observe("500");
+  db.exec("CREATE TRIGGER fail_late_capital BEFORE INSERT ON risk_capital_reconciliation_locks BEGIN SELECT RAISE(ABORT, 'injected'); END");
+  assert.throws(()=>recordConfirmedCapitalEvent(db,{scopeId,exchangeRef:"late",kind:"deposit",amountUsdt:"70",occurredAt:"2026-10-28T00:00:30Z"}),/injected/);
+  assert.equal(db.prepare("SELECT COUNT(*) AS n FROM risk_capital_events").get()?.n,0);
+  assert.equal(db.prepare("SELECT COUNT(*) AS n FROM risk_capital_reconciliation_locks").get()?.n,0);
+  db.close();
+});
+
+test("old-style inserts cannot append an observation after a late-capital lock",()=>{
+  const {db,scopeId,observe}=setup();observe("500");
+  // Simulate the immediately previous implementation, which already wrote its v2 authorization.
+  db.exec("BEGIN IMMEDIATE");
+  db.prepare("INSERT INTO risk_loss_write_authorizations (id,scope_id,kind) VALUES (?,?,'capital')").run('old-capital',scopeId);
+  db.prepare("INSERT INTO risk_capital_events (id,scope_id,exchange_ref,kind,amount_usdt,occurred_at,occurred_ms,input_hash) VALUES (?,?,?,?,?,?,?,?)")
+    .run('old-capital',scopeId,'old-ref','deposit','1','2026-10-28T00:00:30Z',Date.parse('2026-10-28T00:00:30Z'),'synthetic-hash');
+  db.exec("COMMIT");
+  assert.equal(db.prepare("SELECT reason FROM risk_capital_reconciliation_locks WHERE scope_id=?").get(scopeId)?.reason,'late_capital');
+  db.prepare("INSERT INTO risk_loss_write_authorizations (id,scope_id,kind) VALUES (?,?,'observation')").run('old-observation',scopeId);
+  assert.throws(()=>db.prepare("INSERT INTO risk_equity_observations (id,scope_id,source_ref,observed_at,observed_ms,equity_usdt,account_reconciled,capital_history_reconciled,input_hash,result_json) VALUES (?,?,?,?,?,?,?,?,?,?)")
+    .run('old-observation',scopeId,'old-source','2026-10-28T00:02:00Z',Date.parse('2026-10-28T00:02:00Z'),'500',1,1,'hash','{}'),/capital reconciliation required/);
+  db.close();
+});
+
+test("migration quarantines previously overlapping capital and observations when ingestion order is unknown",(t)=>{
+  const dir=mkdtempSync(join(tmpdir(),"taoalpha-capital-migration-")); const resolved=realpathSync(dir); const rel=relative(realpathSync(tmpdir()),resolved);
+  assert.ok(rel && !rel.startsWith("..") && !isAbsolute(rel));t.after(()=>rmSync(resolved,{recursive:true,force:true}));
+  const path=join(resolved,"ledger.db");let db=openDb(path);
+  initializeLossScope(db,{scopeId:"existing",policy,baselineRef:"b",at:"2026-10-28T00:00:00Z"});
+  initializeLossScope(db,{scopeId:"future",policy,baselineRef:"f",at:"2026-10-28T00:00:00Z"});
+  recordConfirmedCapitalEvent(db,{scopeId:"existing",exchangeRef:"capital",kind:"deposit",amountUsdt:"1",occurredAt:"2026-10-28T00:00:30Z"});
+  const input={scopeId:"existing",sourceRef:"observation",observedAt:"2026-10-28T00:01:00Z",equityUsdt:"501",accountReconciled:true,capitalHistoryReconciled:true};
+  assert.equal(observeEquity(db,input).blockNewRisk,false);
+  recordConfirmedCapitalEvent(db,{scopeId:"future",exchangeRef:"future-capital",kind:"deposit",amountUsdt:"1",occurredAt:"2026-10-28T00:02:00Z"});
+  observeEquity(db,{...input,scopeId:"future"});
+  // Simulate the pre-migration v2 ledger, preserving scope, events, and observations.
+  db.exec("DROP TRIGGER risk_late_capital_lock; DROP TRIGGER risk_observation_late_capital_guard; DROP TRIGGER risk_capital_locks_no_update; DROP TRIGGER risk_capital_locks_no_delete; DROP TABLE risk_capital_reconciliation_locks; DELETE FROM schema_migrations WHERE version=4");
+  db.close();db=openDb(path);
+  assert.equal(db.prepare("SELECT reason FROM risk_capital_reconciliation_locks WHERE scope_id=?").get("existing")?.reason,'pre_upgrade_order_unknown');
+  assert.equal(db.prepare("SELECT reason FROM risk_capital_reconciliation_locks WHERE scope_id=?").get("future"),undefined);
+  expectDomainError(()=>observeEquity(db,input),'DATA_NOT_READY',{ruleId:'risk.capital_history_late'});
+  assert.equal(db.prepare("SELECT COUNT(*) AS n FROM risk_capital_events").get()?.n,2);
+  assert.equal(db.prepare("SELECT COUNT(*) AS n FROM risk_equity_observations").get()?.n,2);db.close();
+});
+
+test("another connection cannot observe an unlocked ledger during late-capital commit",(t)=>{
+  const dir=mkdtempSync(join(tmpdir(),"taoalpha-capital-lock-"));const resolved=realpathSync(dir);const rel=relative(realpathSync(tmpdir()),resolved);
+  assert.ok(rel && !rel.startsWith("..") && !isAbsolute(rel)); const path=join(resolved,"ledger.db");
+  const a=openDb(path);const b=openDb(path);t.after(()=>{if(a.isTransaction)a.exec("ROLLBACK");a.close();b.close();rmSync(resolved,{recursive:true,force:true})});
+  initializeLossScope(a,{scopeId:"shared",policy,baselineRef:"b",at:"2026-10-28T00:00:00Z"});
+  const observation={scopeId:"shared",sourceRef:"first",observedAt:"2026-10-28T00:01:00Z",equityUsdt:"500",accountReconciled:true,capitalHistoryReconciled:true};
+  observeEquity(a,observation);b.exec("PRAGMA busy_timeout=0");a.exec("BEGIN IMMEDIATE");
+  a.prepare("INSERT INTO risk_loss_write_authorizations (id,scope_id,kind) VALUES (?,?,'capital')").run('inflight','shared');
+  a.prepare("INSERT INTO risk_capital_events (id,scope_id,exchange_ref,kind,amount_usdt,occurred_at,occurred_ms,input_hash) VALUES (?,?,?,?,?,?,?,?)")
+    .run('inflight','shared','inflight-ref','deposit','1','2026-10-28T00:00:30Z',Date.parse('2026-10-28T00:00:30Z'),'hash');
+  assert.throws(()=>observeEquity(b,observation),/locked/);
+  a.exec("COMMIT");expectDomainError(()=>observeEquity(b,observation),'DATA_NOT_READY',{ruleId:'risk.capital_history_late'});
+});
+
 test("loss lines are exact, persistent and prioritize hard-stop actions", () => {
   const { db, observe } = setup();
   assert.deepEqual([observe("475.01").state, observe("475").state], ["active", "review_needed"]);

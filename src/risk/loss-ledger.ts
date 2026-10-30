@@ -122,6 +122,9 @@ export function observeEquity(db: Db, input: {
   const inputHash = hashJson(normalized);
   return inTransaction(db, () => {
     const scope = requireScope(db, scopeId);
+    if (getRow(db, "SELECT scope_id FROM risk_capital_reconciliation_locks WHERE scope_id = ?", scopeId)) {
+      throw new DomainError("DATA_NOT_READY", "capital history requires reconciliation", [{ ruleId: "risk.capital_history_late", field: "scopeId" }]);
+    }
     if (observedMs < scope.baseline_ms) {
       throw new DomainError("INVALID_INPUT", "equity observation precedes the baseline", [{ ruleId: "risk.observation_after_baseline", field: "observedAt" }]);
     }
@@ -130,7 +133,14 @@ export function observeEquity(db: Db, input: {
       if (duplicate.input_hash !== inputHash) {
         throw new DomainError("IDEMPOTENCY_CONFLICT", "equity source reference was already observed with different content", [{ ruleId: "risk.observation_ref_once", field: "sourceRef" }]);
       }
-      return JSON.parse(duplicate.result_json) as LossObservation;
+      const latest = getRow<ObservationRow>(db, "SELECT id, observed_ms, result_json, input_hash FROM risk_equity_observations WHERE scope_id = ? ORDER BY observed_ms DESC LIMIT 1", scopeId);
+      if (latest?.id !== duplicate.id) throw new DomainError("DATA_NOT_READY", "observation is stale", [{ ruleId: "risk.observation_stale", field: "sourceRef" }]);
+      const saved = JSON.parse(duplicate.result_json) as LossObservation;
+      const currentEvents = allRows<LossEventRow>(db, "SELECT id, kind FROM risk_loss_events WHERE scope_id = ? ORDER BY rowid", scopeId);
+      if (!Array.isArray(saved.eventIds) || saved.eventIds.length !== currentEvents.length || saved.eventIds.some((id, index) => id !== currentEvents[index]?.id)) {
+        throw new DomainError("DATA_NOT_READY", "observation is stale", [{ ruleId: "risk.observation_stale", field: "sourceRef" }]);
+      }
+      return saved;
     }
     const latest = getRow<ObservationRow>(db, "SELECT id, observed_ms, result_json, input_hash FROM risk_equity_observations WHERE scope_id = ? ORDER BY observed_ms DESC LIMIT 1", scopeId);
     if (latest && observedMs <= latest.observed_ms) {
