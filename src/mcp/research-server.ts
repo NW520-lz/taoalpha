@@ -20,7 +20,7 @@ const SAFE_RULES = new Set([
   "bundle.exists", "evidence.exists", "research.agent_mode", "research.bundle_exists", "research.assignment_exists",
   "research.assignment_once", "research.failure_reason", "research.source_key_unique", "research.evidence_ref_known",
   "research.objection_target_known", "research.candidate_in_bundle", "research.objection_answered", "research.objection_known",
-  "research.run_exists", "research.bundle_hash", "research.candidate_scope", "research.decision_hash", "research.decision_missing",
+  "research.run_exists", "research.conflict_schema", "research.conflict_hash", "research.bundle_hash", "research.candidate_scope", "research.decision_hash", "research.decision_missing",
   "research.method_context_missing", "research.method_duplicate", "research.method_hash", "research.method_prior",
   "research.method_record_missing", "research.method_refs", "research.method_schema", "research.method_scope",
   "strategy.readable", "strategy.json",
@@ -89,6 +89,8 @@ export function createResearchMcpServer(deps: CliDeps): McpServer {
   add("taoalpha_research_start", "research start", "创建本地三阶段研究任务；宿主运行方式自报且未核验。",
     z.object({ bundleId: id("bundle"), agentMode: z.enum(["parallel_independent", "serial_degraded"]), methodContext:methodContextSchema.optional() }).strict(), true,
     async (input) => { const view=startResearch(deps.db,input,deps.now); return {...await runCli(["research","get",view.runId],deps),operation:"research start"}; });
+  add("taoalpha_research_conflicts", "research conflicts", "查询已关闭阶段的冲突提交指纹；无报告正文或超时判断。", z.object({runId:id("run")}).strict(), false,
+    ({runId}) => runCli(["research","conflicts",runId],deps));
   add("taoalpha_research_tasks", "research tasks", "拉取当前阶段的角色任务；不启动宿主 Agent。", z.object({ runId: id("run") }).strict(), false,
     ({ runId }) => runCli(["research", "tasks", runId], deps));
   add("taoalpha_research_submit", "research submit", "提交结构化报告或失败原因；只写本地研究记录，不读取请求文件。",

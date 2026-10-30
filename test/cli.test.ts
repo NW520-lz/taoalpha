@@ -176,3 +176,10 @@ test('CLI method context and append record share research backend', async () => 
  assert.equal((await call<ResearchRunView>(deps,'research','get',run.runId)).methodRecordGap,false);
  assert.ok(calls.every(c=>!c.includes('trade'))); deps.db.close();
 });
+
+test('CLI exposes isolated conflict fingerprints after the phase closes',async()=>{
+ const {deps}=setup(); const scan=await call<ScanResult>(deps,'scan'); const run=await call<ResearchRunView>(deps,'research','start','--bundle',scan.bundleId,'--agent-mode','serial_degraded'); const tasks=await call<ResearchTask[]>(deps,'research','tasks',run.runId);
+ await call(deps,'research','submit',tasks[0]!.assignmentId,'--failed','first'); const conflict=await runCli(['research','submit',tasks[0]!.assignmentId,'--failed','secret-sentinel'],deps); assert.equal(conflict.ok,false);
+ assert.deepEqual(await call(deps,'research','conflicts',run.runId),[]);
+ for(const t of tasks.slice(1)) await call(deps,'research','submit',t.assignmentId,'--failed','unavailable'); const rows=await call<unknown[]>(deps,'research','conflicts',run.runId); assert.equal(rows.length,1); assert.ok(!JSON.stringify(rows).includes('secret-sentinel')); deps.db.close();
+});

@@ -9,6 +9,7 @@ import { loadStrategy } from "./scan/strategy.ts";
 import { runScan, type ScanCandidate, type ScanContent, type ScanResult } from "./scan/scan.ts";
 import {
   completeTask,
+  listSubmissionConflicts,
   getRun,
   nextTasks,
   startResearch,
@@ -44,7 +45,7 @@ const USAGE =
   "用法：status | scan [--strategy <path>] | bundle <bundleId> [--top <n>] | evidence <evidenceId> | " +
   "research start --bundle <id> --agent-mode <parallel_independent|serial_degraded> | research tasks <runId> | " +
   "research submit <assignmentId> (--file <report.json> | --failed <reason>) | research get <runId> | " +
-  "research method-context <runId> | research method-create --file <record.json> | research method-get <recordId>";
+  "research method-context <runId> | research method-create --file <record.json> | research method-get <recordId> | research conflicts <runId>";
 
 const STATUS_ZH: Record<ResearchRunView["status"], string> = {
   independent_research: "独立研究",
@@ -165,6 +166,10 @@ async function research(args: string[], deps: CliDeps): Promise<Output> {
       const file = stringOption(values, "method-file");
       const view = startResearch(deps.db, { bundleId, agentMode: agentMode as AgentMode, ...(file ? {methodContext: readJson(file) as MethodContextInput} : {}) }, deps.now);
       return { value: view, summaryZh: runSummary(view) };
+    }
+    case "conflicts": {
+      const {positionals}=parse(rest,{}); if(positionals.length!==1 || !positionals[0]) throw usageError("research conflicts requires a run id");
+      return {value:listSubmissionConflicts(deps.db,positionals[0]),summaryZh:"冲突提交仅保留指纹；无截止时间，不能判断是否超时。"};
     }
     case "tasks": {
       const { positionals } = parse(rest, {});

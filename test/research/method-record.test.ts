@@ -51,8 +51,8 @@ test('legacy database migrates transactionally without changing existing content
  const dir=realpathSync(mkdtempSync(join(tmpdir(),'taoalpha-migration-'))); const withinTemp=relative(realpathSync(tmpdir()),dir);
  assert.ok(withinTemp && !withinTemp.startsWith('..') && !isAbsolute(withinTemp)); const path=join(dir,'old.db');
  try { const old=new DatabaseSync(path); for(const statement of SCHEMA) old.exec(statement); old.prepare('INSERT INTO evidence_bundles VALUES (?, ?, ?, ?)').run('bundle-old','2026-01-01T00:00:00Z','{}','old-hash'); old.close();
- const migrated=openDb(path); assert.equal((migrated.prepare('SELECT content FROM evidence_bundles WHERE id = ?').get('bundle-old') as {content:string}).content,'{}'); assert.equal((migrated.prepare('SELECT count(*) AS n FROM schema_migrations').get() as {n:number}).n,2); migrated.close();
- const again=openDb(path); assert.equal((again.prepare('SELECT count(*) AS n FROM schema_migrations').get() as {n:number}).n,2); again.close();
+ const migrated=openDb(path); assert.equal((migrated.prepare('SELECT content FROM evidence_bundles WHERE id = ?').get('bundle-old') as {content:string}).content,'{}'); assert.equal((migrated.prepare('SELECT count(*) AS n FROM schema_migrations').get() as {n:number}).n,3); migrated.close();
+ const again=openDb(path); assert.equal((again.prepare('SELECT count(*) AS n FROM schema_migrations').get() as {n:number}).n,3); again.close();
  } finally {rmSync(dir,{recursive:true,force:true});}
 });
 

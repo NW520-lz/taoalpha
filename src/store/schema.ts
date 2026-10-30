@@ -170,3 +170,10 @@ export const MIGRATION_2: string[] = [
   `CREATE TRIGGER IF NOT EXISTS decision_seals_no_update BEFORE UPDATE ON research_decision_seals BEGIN SELECT RAISE(ABORT, 'decision seal immutable'); END`,
   `CREATE TRIGGER IF NOT EXISTS decision_seals_no_delete BEFORE DELETE ON research_decision_seals BEGIN SELECT RAISE(ABORT, 'decision seal immutable'); END`,
 ];
+
+/** Migration 3: isolated conflict fingerprints; no submitted text or URLs. */
+export const MIGRATION_3: string[] = [
+ `CREATE TABLE IF NOT EXISTS research_submission_conflicts (id TEXT PRIMARY KEY, run_id TEXT NOT NULL REFERENCES research_runs(id), assignment_id TEXT NOT NULL REFERENCES research_assignments(id), phase INTEGER NOT NULL, role TEXT NOT NULL, original_sha256 TEXT NOT NULL, payload_sha256 TEXT NOT NULL, kind TEXT NOT NULL, created_at TEXT NOT NULL, record_sha256 TEXT NOT NULL, UNIQUE(assignment_id,payload_sha256))`,
+ `CREATE TRIGGER IF NOT EXISTS submission_conflicts_no_update BEFORE UPDATE ON research_submission_conflicts BEGIN SELECT RAISE(ABORT, 'submission conflicts immutable'); END`,
+ `CREATE TRIGGER IF NOT EXISTS submission_conflicts_no_delete BEFORE DELETE ON research_submission_conflicts BEGIN SELECT RAISE(ABORT, 'submission conflicts immutable'); END`,
+];

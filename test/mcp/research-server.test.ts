@@ -17,7 +17,7 @@ import type { ResearchRunView, ResearchTask } from "../../src/research/research-
 import { adversaryReport, fundamentalsReport, marketStructureReport, quantReport, synthesisReport, seedBundle } from "../helpers/research-fixtures.ts";
 import { DomainError } from "../../src/lib/errors.ts";
 
-const TOOL_NAMES = ["taoalpha_method_context", "taoalpha_method_create", "taoalpha_method_get", "taoalpha_status", "taoalpha_scan", "taoalpha_bundle", "taoalpha_evidence", "taoalpha_research_start", "taoalpha_research_tasks", "taoalpha_research_submit", "taoalpha_research_get"];
+const TOOL_NAMES = ["taoalpha_research_conflicts", "taoalpha_method_context", "taoalpha_method_create", "taoalpha_method_get", "taoalpha_status", "taoalpha_scan", "taoalpha_bundle", "taoalpha_evidence", "taoalpha_research_start", "taoalpha_research_tasks", "taoalpha_research_submit", "taoalpha_research_get"];
 
 function removeTestDirectory(directory: string): void {
   const target = realpathSync(directory);
@@ -87,7 +87,7 @@ test("MCP reports a missing sealed decision using its fixed rule", async (t) => 
   assert.deepEqual(result.error?.violations,[{ruleId:"research.decision_hash"}]);
 });
 
-test("SDK handshake exposes only eleven research tools and status performs no market/account reads", async (t) => {
+test("SDK handshake exposes only twelve research tools and status performs no market/account reads", async (t) => {
   const { client, calls } = await setup(t);
   assert.equal(client.getServerVersion()?.name, "taoalpha-research");
   const { tools } = await client.listTools();
@@ -323,4 +323,13 @@ test("method tools share research state and reject forged context and extra fiel
  assert.deepEqual(badObservation.error?.violations,[{ruleId:'mcp.input_schema'}]);
  assert.doesNotMatch(JSON.stringify(badObservation),/synthetic-private-sentinel/);
  assert.ok(calls.every(c=>!c.includes("trade")));
+});
+
+test('MCP exposes isolated conflict metadata, never submitted text',async(t)=>{
+ const {client}=await setup(t); const scan=await value<ScanResult>(client,'taoalpha_scan'); const run=await value<ResearchRunView>(client,'taoalpha_research_start',{bundleId:scan.bundleId,agentMode:'serial_degraded'}); const tasks=await value<ResearchTask[]>(client,'taoalpha_research_tasks',{runId:run.runId});
+ await value(client,'taoalpha_research_submit',{assignmentId:tasks[0]!.assignmentId,outcome:{kind:'failed',reason:'first'}});
+ const failed=await call(client,'taoalpha_research_submit',{assignmentId:tasks[0]!.assignmentId,outcome:{kind:'failed',reason:'secret-sentinel'}}); assert.equal(failed.ok,false); assert.ok(!JSON.stringify(failed).includes('secret-sentinel'));
+ assert.deepEqual(await value(client,'taoalpha_research_conflicts',{runId:run.runId}),[]);
+ for(const task of tasks.slice(1)) await value(client,'taoalpha_research_submit',{assignmentId:task.assignmentId,outcome:{kind:'failed',reason:'unavailable'}});
+ const rows=await value<unknown[]>(client,'taoalpha_research_conflicts',{runId:run.runId}); assert.equal(rows.length,1); assert.ok(!JSON.stringify(rows).includes('secret-sentinel'));
 });

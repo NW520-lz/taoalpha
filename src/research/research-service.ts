@@ -127,17 +127,16 @@ export function nextTasks(db: Db, runId: string): ResearchTask[] {
 
 export function completeTask(db: Db, input: { assignmentId: string; outcome: SubmittedOutcome }, now: () => Date): ResearchRunView {
   const at = now().toISOString();
-  const runId = inTransaction(db, () => {
+  const result = inTransaction(db, () => {
     const assignment = getRow<AssignmentRow>(db, "SELECT * FROM research_assignments WHERE id = ?", input.assignmentId);
     if (!assignment) {
       throw new DomainError("INVALID_INPUT", `unknown assignment ${input.assignmentId}`, [{ ruleId: "research.assignment_exists", field: "assignmentId" }]);
     }
     const submittedSha256 = hashJson(input.outcome);
     if (assignment.state !== "open") {
-      if (assignment.submitted_sha256 === submittedSha256) return assignment.run_id; // identical replay
-      throw new DomainError("IDEMPOTENCY_CONFLICT", `assignment ${assignment.id} was already finished with different content`, [
-        { ruleId: "research.assignment_once", field: "assignmentId" },
-      ]);
+      if (assignment.submitted_sha256 === submittedSha256) return {runId:assignment.run_id, conflict:false};
+      saveSubmissionConflict(db,assignment,input.outcome,submittedSha256,at);
+      return {runId:assignment.run_id, conflict:true};
     }
     const run = requireRun(db, assignment.run_id);
     const stored = toStoredOutcome(db, run, assignment, input.outcome);
@@ -150,9 +149,10 @@ export function completeTask(db: Db, input: { assignmentId: string; outcome: Sub
     );
     appendAudit(db, at, "research.task_finished", assignment.id, { runId: run.id, role: assignment.role, outcome: stored.kind });
     advancePhase(db, run, at);
-    return run.id;
+    return {runId:run.id, conflict:false};
   });
-  return getRun(db, runId);
+  if(result.conflict) throw new DomainError("IDEMPOTENCY_CONFLICT", "assignment already finished with different content", [{ruleId:"research.assignment_once",field:"assignmentId"}]);
+  return getRun(db, result.runId);
 }
 
 export function getRun(db: Db, runId: string): ResearchRunView {
@@ -338,4 +338,24 @@ function requireRun(db: Db, runId: string): RunRow {
 
 function loadAssignments(db: Db, runId: string): AssignmentRow[] {
   return allRows<AssignmentRow>(db, "SELECT * FROM research_assignments WHERE run_id = ? ORDER BY phase, rowid", runId);
+}
+
+export interface SubmissionConflict { id:string; runId:string; assignmentId:string; phase:ResearchPhase; role:ResearchRole; originalSha256:string; payloadSha256:string; kind:"report"|"failed"; createdAt:string; classification:"conflicting_submission"; timeout:"unknown_no_deadline"; }
+function saveSubmissionConflict(db:Db, assignment:AssignmentRow, outcome:SubmittedOutcome, payloadSha256:string, at:string):void {
+  let serialized:string; try { serialized=JSON.stringify(outcome); } catch { throw new DomainError("INVALID_INPUT","invalid conflict outcome",[{ruleId:"research.conflict_schema"}]); }
+  if(typeof serialized!=="string" || Buffer.byteLength(serialized,"utf8")>32768 || !outcome || typeof outcome!=="object") throw new DomainError("INVALID_INPUT","invalid conflict outcome",[{ruleId:"research.conflict_schema"}]);
+  const keys=Object.keys(outcome).sort().join(',');
+  if(outcome.kind==='report' && keys==='kind,report') parseReport(assignment.role,outcome.report);
+  else if(outcome.kind==='failed' && keys==='kind,reason' && typeof outcome.reason==='string' && outcome.reason.trim() && outcome.reason.length<=2000) { /* metadata only */ }
+  else throw new DomainError("INVALID_INPUT","invalid conflict outcome",[{ruleId:"research.conflict_schema"}]);
+  const previous=getRow<{id:string}>(db,'SELECT id FROM research_submission_conflicts WHERE assignment_id = ? AND payload_sha256 = ?',assignment.id,payloadSha256); if(previous) return;
+  const item:SubmissionConflict={id:newId('conflict'),runId:assignment.run_id,assignmentId:assignment.id,phase:assignment.phase,role:assignment.role,originalSha256:assignment.submitted_sha256!,payloadSha256,kind:outcome.kind,createdAt:at,classification:'conflicting_submission',timeout:'unknown_no_deadline'};
+  db.prepare('INSERT INTO research_submission_conflicts VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)').run(item.id,item.runId,item.assignmentId,item.phase,item.role,item.originalSha256,item.payloadSha256,item.kind,item.createdAt,hashJson(item));
+}
+export function listSubmissionConflicts(db:Db,runId:string):SubmissionConflict[] {
+  requireRun(db,runId); const assignments=loadAssignments(db,runId);
+  const rows=allRows<{id:string;run_id:string;assignment_id:string;phase:ResearchPhase;role:ResearchRole;original_sha256:string;payload_sha256:string;kind:'report'|'failed';created_at:string;record_sha256:string}>(db,'SELECT * FROM research_submission_conflicts WHERE run_id = ? ORDER BY rowid',runId);
+  return rows.map(row=>{ const a=assignments.find(a=>a.id===row.assignment_id); const item:SubmissionConflict={id:row.id,runId:row.run_id,assignmentId:row.assignment_id,phase:row.phase,role:row.role,originalSha256:row.original_sha256,payloadSha256:row.payload_sha256,kind:row.kind,createdAt:row.created_at,classification:'conflicting_submission',timeout:'unknown_no_deadline'};
+    if(!a || a.phase!==item.phase || a.role!==item.role || a.submitted_sha256!==item.originalSha256 || hashJson(item)!==row.record_sha256) throw new DomainError('INVALID_INPUT','conflict integrity failure',[{ruleId:'research.conflict_hash'}]); return item;
+  }).filter(item=>!assignments.some(a=>a.phase===item.phase && a.state==='open'));
 }
