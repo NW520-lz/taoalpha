@@ -16,7 +16,7 @@ test('observable marks replay a specified rule without promoting assumptions to 
 });
 
 test('a late or unavailable observation cannot be used before it becomes available',()=>{
- const late={...base,marks:[{...base.marks[0]!,availableAtMs:1200},...base.marks.slice(1)]};
+ const late={...base,marks:[base.marks[0]!,{...base.marks[1]!,availableAtMs:1250},base.marks[2]!]};
  const result=replayObservedMarks(late);
  assert.equal(result.hypotheticalTrades.length,0);
  assert.ok(result.skips.includes('no_later_execution_marks'));
@@ -48,4 +48,11 @@ test('input hash binds the numeric rule and cost assumptions',()=>{
  const second=replayObservedMarks({...base,cost:{...base.cost,entryFeePpm:2000}});
  assert.notEqual(one.inputSha256,second.inputSha256);
  assert.notEqual(one.hypotheticalTrades[0]?.netUsdtE20,second.hypotheticalTrades[0]?.netUsdtE20);
+});
+
+test('rejects availability inversion or ties instead of processing signals in the wrong order',()=>{
+ const inverted={...base,marks:[{observedAtMs:1000,availableAtMs:5000,priceMicro:'100000000'},{observedAtMs:1200,availableAtMs:1200,priceMicro:'101000000'},{observedAtMs:5100,availableAtMs:5100,priceMicro:'102000000'},{observedAtMs:5200,availableAtMs:5200,priceMicro:'103000000'}]};
+ assert.throws(()=>replayObservedMarks(inverted));
+ const tied={...base,marks:[{...base.marks[0]!,availableAtMs:1200},...base.marks.slice(1)]};
+ assert.throws(()=>replayObservedMarks(tied));
 });

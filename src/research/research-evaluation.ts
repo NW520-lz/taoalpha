@@ -45,9 +45,11 @@ function calculate(quantity:string,entry:string,exit:string,entryFee:number,exit
  */
 export function replayObservedMarks(raw:unknown) {
  const input=value(replaySchema,raw);
+ let previousAvailable:number|null=null;
  for(let i=0;i<input.marks.length;i++) {
   const m=input.marks[i]!;
-  if((i>0 && m.observedAtMs<=input.marks[i-1]!.observedAtMs) || (m.availableAtMs!==null && m.availableAtMs<m.observedAtMs)) invalid();
+  if((i>0 && m.observedAtMs<=input.marks[i-1]!.observedAtMs) || (m.availableAtMs!==null && (m.availableAtMs<m.observedAtMs || (previousAvailable!==null && m.availableAtMs<=previousAvailable)))) invalid();
+  if(m.availableAtMs!==null) previousAvailable=m.availableAtMs;
  }
  const missing=['verified_historical_availability','registered_executable_rules','historical_universe','realistic_fill_and_cost_evidence'];
  const trades:Array<{signalIndex:number;entryIndex:number;exitIndex:number;grossUsdtE20:string;feesUsdtE20:string;impactUsdtE20:string;netUsdtE20:string}>=[];
