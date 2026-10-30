@@ -9,16 +9,19 @@ const text=z.string().min(1).max(2000).refine(v=>v.trim()===v && v.length>0);
 const version=z.number().int().positive().max(Number.MAX_SAFE_INTEGER);
 const hash=z.string().regex(/^[a-f0-9]{64}$/);
 const source=z.strictObject({reference,sha256:hash,version:reference});
+export const historyScopeSchema=z.strictObject({site:z.enum(['global','eea','us','tr']),instId:z.string().regex(/^[A-Z0-9]+-USDT(?:-SWAP)?$/),product:z.enum(['spot','usdt_perpetual']),resolution:z.enum(['1m','5m','15m','1H','4H','1Dutc'])})
+ .refine(v=>v.product==='spot'?!v.instId.endsWith('-SWAP'):v.instId.endsWith('-SWAP'));
+const dataSource=source.extend({scope:historyScopeSchema.optional()});
 const window=z.strictObject({start:z.iso.datetime({offset:true}),end:z.iso.datetime({offset:true})});
 const schema=z.strictObject({experimentId:reference,version,attemptId:reference,
  strategy:z.strictObject({id:reference,version,entryRules:text,exitRules:text,invalidationRules:text}),
- data:source,code:source,
+ data:dataSource,code:source,
  costs:z.strictObject({fees:text,spread:text,slippage:text,funding:text,execution:text}),
  windows:z.strictObject({exploration:window,validation:window,evaluation:window}),
  evaluation:z.strictObject({metrics:text,thresholds:text,baseline:text,method:text})
 }).refine(v=>{const {exploration:a,validation:b,evaluation:c}=v.windows; const t=[a.start,a.end,b.start,b.end,c.start,c.end].map(Date.parse); return t.every(Number.isFinite) && t[0]!<t[1]! && t[1]!<=t[2]! && t[2]!<t[3]! && t[3]!<=t[4]! && t[4]!<t[5]!});
 type Input=z.infer<typeof schema>;
-export type ExperimentRegistration=Input & {schemaVersion:1;registeredAt:string;contentSha256:string;status:'unvalidated';dataAvailability:'unverified';executionAuthorized:false};
+export type ExperimentRegistration=Input & {schemaVersion:1|2;registeredAt:string;contentSha256:string;status:'unvalidated';dataAvailability:'unverified';executionAuthorized:false};
 interface Row {experiment_id:string;version:number;attempt_id:string;content:string;content_sha256:string}
 function fail(code:'INVALID_INPUT'|'IDEMPOTENCY_CONFLICT'|'PERSISTENCE_UNAVAILABLE'='INVALID_INPUT'):never {throw new DomainError(code,'Experiment registration rejected',[{ruleId:'experiment.registration'}])}
 function safe<T>(fn:()=>T):T {
@@ -52,7 +55,7 @@ export function createExperimentRegistry(db:Db,now:()=>Date) {
  function parseStoredRow(row:Row):ExperimentRegistration {
   const parsed=JSON.parse(row.content) as ExperimentRegistration;
   const {contentSha256,...body}=parsed;
-  if(canonicalJson(parsed)!==row.content || contentSha256!==row.content_sha256 || sha256(canonicalJson(body))!==contentSha256 || parsed.experimentId!==row.experiment_id || parsed.version!==row.version || parsed.attemptId!==row.attempt_id || parsed.status!=='unvalidated' || parsed.dataAvailability!=='unverified' || parsed.executionAuthorized!==false || parsed.schemaVersion!==1) fail();
+  if(canonicalJson(parsed)!==row.content || contentSha256!==row.content_sha256 || sha256(canonicalJson(body))!==contentSha256 || parsed.experimentId!==row.experiment_id || parsed.version!==row.version || parsed.attemptId!==row.attempt_id || parsed.status!=='unvalidated' || parsed.dataAvailability!=='unverified' || parsed.executionAuthorized!==false || !((parsed.schemaVersion===1 && parsed.data?.scope===undefined)||(parsed.schemaVersion===2 && parsed.data?.scope!==undefined))) fail();
   const {schemaVersion,registeredAt,status,dataAvailability,executionAuthorized,...input}=body;
   const strategy=getRow<{content:string}>(db,'SELECT content FROM experiment_strategy_versions WHERE strategy_id=? AND version=?',input.strategy.id,input.strategy.version);
   if(!schema.safeParse(input).success || !Number.isFinite(Date.parse(registeredAt)) || !strategy || strategy.content!==canonicalJson(input.strategy)) fail();
@@ -62,6 +65,7 @@ export function createExperimentRegistry(db:Db,now:()=>Date) {
   register(raw:unknown):ExperimentRegistration {return safe(()=>{const input=readInput(raw); return inTransaction(db,()=>{
    const row=getRow<Row>(db,'SELECT * FROM experiment_preregistrations WHERE (experiment_id=? AND version=?) OR attempt_id=?',input.experimentId,input.version,input.attemptId);
    if(row){const old=parseRow(row); const {schemaVersion,registeredAt,contentSha256,status,dataAvailability,executionAuthorized,...original}=old; if(canonicalJson(original)!==canonicalJson(input)) fail('IDEMPOTENCY_CONFLICT'); return old;}
+   if(!input.data.scope) fail();
    const latest=getRow<{version:number}>(db,'SELECT version FROM experiment_preregistrations WHERE experiment_id=? ORDER BY version DESC LIMIT 1',input.experimentId);
    if(input.version!==(latest ? latest.version+1 : 1)) fail('IDEMPOTENCY_CONFLICT');
    const priorStrategy=getRow<{content:string}>(db,'SELECT content FROM experiment_strategy_versions WHERE strategy_id=? AND version=?',input.strategy.id,input.strategy.version);
@@ -69,7 +73,7 @@ export function createExperimentRegistry(db:Db,now:()=>Date) {
    if(priorStrategy && priorStrategy.content!==strategyContent) fail('IDEMPOTENCY_CONFLICT');
    if(!priorStrategy) db.prepare('INSERT INTO experiment_strategy_versions VALUES(?,?,?)').run(input.strategy.id,input.strategy.version,strategyContent);
    const date=now(); if(!(date instanceof Date)||!Number.isFinite(date.getTime())) fail();
-   const body={...input,schemaVersion:1 as const,registeredAt:date.toISOString(),status:'unvalidated' as const,dataAvailability:'unverified' as const,executionAuthorized:false as const};
+   const body={...input,schemaVersion:2 as const,registeredAt:date.toISOString(),status:'unvalidated' as const,dataAvailability:'unverified' as const,executionAuthorized:false as const};
    const record={...body,contentSha256:sha256(canonicalJson(body))};
    db.prepare('INSERT INTO experiment_preregistrations VALUES(?,?,?,?,?)').run(input.experimentId,input.version,input.attemptId,canonicalJson(record),record.contentSha256);
    return record;
