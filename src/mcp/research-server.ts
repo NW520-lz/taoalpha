@@ -20,7 +20,10 @@ const SAFE_RULES = new Set([
   "bundle.exists", "evidence.exists", "research.agent_mode", "research.bundle_exists", "research.assignment_exists",
   "research.assignment_once", "research.failure_reason", "research.source_key_unique", "research.evidence_ref_known",
   "research.objection_target_known", "research.candidate_in_bundle", "research.objection_answered", "research.objection_known",
-  "research.run_exists", "strategy.readable", "strategy.json",
+  "research.run_exists", "research.bundle_hash", "research.candidate_scope", "research.decision_hash", "research.decision_missing",
+  "research.method_context_missing", "research.method_duplicate", "research.method_hash", "research.method_prior",
+  "research.method_record_missing", "research.method_refs", "research.method_schema", "research.method_scope",
+  "strategy.readable", "strategy.json",
   ...["invalid_type", "too_big", "too_small", "invalid_format", "not_multiple_of", "unrecognized_keys", "invalid_union", "invalid_key", "invalid_element", "invalid_value", "custom"]
     .flatMap((code) => [`schema.${code}`, `strategy.${code}`]),
 ]);

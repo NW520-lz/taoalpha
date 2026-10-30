@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { openDb } from '../../src/store/db.ts';
 import { seedBundle } from '../helpers/research-fixtures.ts';
 import { NOW } from '../helpers/market-fixtures.ts';
-import { startResearch, nextTasks, completeTask } from '../../src/research/research-service.ts';
+import { startResearch, nextTasks, completeTask, getRun } from '../../src/research/research-service.ts';
 import { createMethodRecord, getMethodRecord } from '../../src/research/method-record.ts';
 
 const now = () => NOW;
@@ -62,6 +62,15 @@ test('record rejects a changed stored decision, including on replay', async () =
  const record=createMethodRecord(db,input,now);
  db.prepare('UPDATE research_runs SET decision = ? WHERE id = ?').run(JSON.stringify({finalDecision:'skip',draftCards:[]}),run.runId);
  assert.throws(()=>getMethodRecord(db,record.id)); assert.throws(()=>createMethodRecord(db,input,now)); db.close();
+});
+
+test('a sealed decision cannot disappear before any method record exists', async () => {
+ const db=openDb(':memory:'); const scan=await seedBundle(db);
+ const run=startResearch(db,{bundleId:scan.bundleId,agentMode:'serial_degraded',methodContext:{schemaVersion:1,methodVersion:'v1',instrument:null,product:null,observationResolution:null,evaluationHorizon:null}},now);
+ while(nextTasks(db,run.runId).length) for(const task of nextTasks(db,run.runId)) completeTask(db,{assignmentId:task.assignmentId,outcome:{kind:'failed',reason:'unavailable'}},now);
+ db.prepare('UPDATE research_runs SET decision = NULL WHERE id = ?').run(run.runId);
+ assert.throws(()=>getRun(db,run.runId), /decision hash mismatch/);
+ db.close();
 });
 
 test('broad research tracks method gaps separately for multiple candidate drafts', async () => {

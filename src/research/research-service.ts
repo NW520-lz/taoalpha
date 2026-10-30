@@ -157,9 +157,10 @@ export function getRun(db: Db, runId: string): ResearchRunView {
   const run = requireRun(db, runId);
   const assignments = loadAssignments(db, runId);
   const decision = run.decision === null ? null : JSON.parse(run.decision) as Decision;
-  if (decision && getMethodContext(db,runId)) {
-    const seal=getRow<{decision_sha256:string}>(db,"SELECT decision_sha256 FROM research_decision_seals WHERE run_id = ?",runId);
-    if (!seal || seal.decision_sha256 !== hashJson(decision)) throw new DomainError("INVALID_INPUT", "decision hash mismatch", [{ruleId:"research.decision_hash"}]);
+  const methodContext = getMethodContext(db, runId);
+  const seal = getRow<{decision_sha256:string}>(db,"SELECT decision_sha256 FROM research_decision_seals WHERE run_id = ?",runId);
+  if (seal || (methodContext && (decision || runStatus(assignments) === "decided"))) {
+    if (!methodContext || !decision || !seal || seal.decision_sha256 !== hashJson(decision)) throw new DomainError("INVALID_INPUT", "decision hash mismatch", [{ruleId:"research.decision_hash"}]);
   }
   const records = allRows<{id:string}>(db, "SELECT id FROM decision_method_records WHERE run_id = ?",runId).map(r=>getMethodRecord(db,r.id));
   const scopes = decision ? [...decision.draftCards.map(c=>c.draftId), ...(decision.finalDecision === "wait" || decision.finalDecision === "skip" ? [decision.finalDecision] : [])] : [];
@@ -177,7 +178,7 @@ export function getRun(db: Db, runId: string): ResearchRunView {
     reports: toReports(assignments.filter((a) => !assignments.some((other) => other.phase === a.phase && other.state === "open"))),
     missingRoles: assignments.filter((a) => a.state === "failed").map((a) => a.role),
     decision,
-    methodContext: getMethodContext(db, runId),
+    methodContext,
     methodRecordGap: decision === null ? false : missingMethodScopes.length > 0,
     missingMethodScopes,
   };

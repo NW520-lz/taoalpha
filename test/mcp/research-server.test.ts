@@ -14,7 +14,7 @@ import { createFakeClient } from "../helpers/fake-okx.ts";
 import { NOW, marketRoutes, testStrategy } from "../helpers/market-fixtures.ts";
 import type { ScanResult } from "../../src/scan/scan.ts";
 import type { ResearchRunView, ResearchTask } from "../../src/research/research-service.ts";
-import { adversaryReport, fundamentalsReport, marketStructureReport, quantReport, synthesisReport } from "../helpers/research-fixtures.ts";
+import { adversaryReport, fundamentalsReport, marketStructureReport, quantReport, synthesisReport, seedBundle } from "../helpers/research-fixtures.ts";
 import { DomainError } from "../../src/lib/errors.ts";
 
 const TOOL_NAMES = ["taoalpha_method_context", "taoalpha_method_create", "taoalpha_method_get", "taoalpha_status", "taoalpha_scan", "taoalpha_bundle", "taoalpha_evidence", "taoalpha_research_start", "taoalpha_research_tasks", "taoalpha_research_submit", "taoalpha_research_get"];
@@ -66,6 +66,26 @@ async function value<T>(client: Client, name: string, args: Record<string, unkno
   assert.equal(envelope.ok, true, envelope.summaryZh);
   return envelope.value as T;
 }
+
+test("MCP exposes fixed method scope failures without leaking submitted values", async (t) => {
+  const {client, deps} = await setup(t);
+  const scan = await seedBundle(deps.db);
+  const result = await call(client, "taoalpha_research_start", {bundleId:scan.bundleId, agentMode:"serial_degraded", methodContext:{schemaVersion:1,methodVersion:"v1",instrument:"synthetic-private-sentinel",product:"spot",observationResolution:null,evaluationHorizon:null}});
+  assert.equal(result.ok, false);
+  assert.deepEqual(result.error?.violations, [{ruleId:"research.method_scope"}]);
+  assert.doesNotMatch(JSON.stringify(result), /synthetic-private-sentinel/);
+});
+
+test("MCP reports a missing sealed decision using its fixed rule", async (t) => {
+  const {client, deps} = await setup(t);
+  const scan = await seedBundle(deps.db);
+  const run=await value<ResearchRunView>(client,"taoalpha_research_start",{bundleId:scan.bundleId,agentMode:"serial_degraded",methodContext:{schemaVersion:1,methodVersion:"v1",instrument:null,product:null,observationResolution:null,evaluationHorizon:null}});
+  for(let phase=0;phase<3;phase++) for(const task of await value<ResearchTask[]>(client,"taoalpha_research_tasks",{runId:run.runId})) await value(client,"taoalpha_research_submit",{assignmentId:task.assignmentId,outcome:{kind:"failed",reason:"unavailable"}});
+  deps.db.prepare("UPDATE research_runs SET decision = NULL WHERE id = ?").run(run.runId);
+  const result=await call(client,"taoalpha_research_get",{runId:run.runId});
+  assert.equal(result.ok,false);
+  assert.deepEqual(result.error?.violations,[{ruleId:"research.decision_hash"}]);
+});
 
 test("SDK handshake exposes only eleven research tools and status performs no market/account reads", async (t) => {
   const { client, calls } = await setup(t);
