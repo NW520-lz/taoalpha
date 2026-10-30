@@ -10,8 +10,8 @@ const ref=z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/);
 const expectedSchema=z.strictObject({site:z.enum(['global','eea','us','tr']),instId:z.string().regex(/^[A-Z0-9]+-USDT(?:-SWAP)?$/),product:z.enum(['spot','usdt_perpetual']),resolution:z.enum(['1m','5m','15m','1H','4H','1Dutc'])});
 const inputSchema=z.strictObject({experimentId:ref,version:z.number().int().positive().max(Number.MAX_SAFE_INTEGER),expected:expectedSchema});
 const source=z.object({endpoint:z.string().min(1),receivedAt:z.string().nullable(),status:z.number().int().nullable(),body:z.string().nullable(),sha256:z.string().regex(/^[a-f0-9]{64}$/).nullable(),error:z.string().nullable()}).strict();
-const manifestSchema=z.object({schemaVersion:z.literal(1),parsingVersion:z.literal('okx-history-v1'),site:z.enum(['global','eea','us','tr']),request:z.object({instId:z.string(),product:z.enum(['spot','usdt_perpetual']),resolution:z.enum(['1m','5m','15m','1H','4H','1Dutc']),start:z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER),end:z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER),asOf:z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER)}).passthrough(),sources:z.array(source).max(200),gaps:z.array(z.string().min(1).max(500)).max(100100),candleCoverage:z.enum(['complete','partial']),availability:z.literal('historical_publication_unverified'),historicalUniverse:z.literal('unknown_survivorship_gap'),funding:z.object({status:z.enum(['not_applicable','unknown'])}).passthrough(),strategyValid:z.literal(false),executionAuthorized:z.literal(false)}).passthrough();
-function fail():never{throw new DomainError('INVALID_INPUT','Experiment history inspection rejected',[{ruleId:'experiment.history_inspection'}])}
+const manifestSchema=z.object({schemaVersion:z.literal(1),parsingVersion:z.literal('okx-history-v1'),site:z.enum(['global','eea','us','tr']),request:z.object({instId:z.string(),product:z.enum(['spot','usdt_perpetual']),resolution:z.enum(['1m','5m','15m','1H','4H','1Dutc']),start:z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER),end:z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER),asOf:z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER)}).passthrough(),sources:z.array(source).max(200),gaps:z.array(z.string().min(1).max(500)),candleCoverage:z.enum(['complete','partial']),availability:z.literal('historical_publication_unverified'),historicalUniverse:z.literal('unknown_survivorship_gap'),funding:z.object({status:z.enum(['not_applicable','unknown'])}).passthrough(),strategyValid:z.literal(false),executionAuthorized:z.literal(false)}).passthrough();
+function fail(code:'INVALID_INPUT'|'PERSISTENCE_UNAVAILABLE'='INVALID_INPUT'):never{throw new DomainError(code,'Experiment history inspection rejected',[{ruleId:'experiment.history_inspection'}])}
 /** Read-only backend comparison. Registry must be process-owned and use the same db connection. */
 export function inspectExperimentHistory(db:Db,registry:Pick<ReturnType<typeof createExperimentRegistry>,'get'>,raw:unknown) {
  try {
@@ -31,6 +31,10 @@ export function inspectExperimentHistory(db:Db,registry:Pick<ReturnType<typeof c
    const output={binding:'matched' as const,expectedScopeBinding:'caller_supplied_unbound' as const,reference:data.reference,sha256:data.sha256,version:data.version,reportedCandleCoverage:m.candleCoverage,gaps:m.gaps,availability:m.availability,historicalUniverse:m.historicalUniverse,funding:m.funding.status,observedSourceFailures:m.sources.filter(s=>s.error!==null || s.body===null || s.status===null || s.status<200 || s.status>=300).length,status:'unvalidated' as const,executionAuthorized:false as const,unknowns:['scope_not_frozen_in_registration','historical_publication_unverified','historical_universe_unknown','history_manifest_not_independently_verified','candle_coverage_not_independently_verified','strategy_and_backtest_unvalidated']};
    db.exec('ROLLBACK');return output;
   } catch(e) {if(db.isTransaction)db.exec('ROLLBACK');throw e}
- } catch {return fail()}
+ } catch (error) {
+  if (error instanceof DomainError && error.code==='PERSISTENCE_UNAVAILABLE') return fail('PERSISTENCE_UNAVAILABLE');
+  if (error instanceof Error && 'code' in error && (error.code==='ERR_SQLITE_ERROR' || error.code==='ERR_INVALID_STATE')) return fail('PERSISTENCE_UNAVAILABLE');
+  return fail();
+ }
 }
 

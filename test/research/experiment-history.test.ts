@@ -69,3 +69,22 @@ test('source failures are reported even when manifest coverage says complete',as
   assert.equal(result.observedSourceFailures,1);assert.ok(result.unknowns.includes('candle_coverage_not_independently_verified'));assert.equal(result.status,'unvalidated');
  }finally{db.close()}
 });
+
+test('maximum-window collector output preserves every gap including invalid candle rows',async()=>{
+ const {db,registry,input}=await setup();try {
+  const end=100000*60000; let page=0; const fake:PublicClient={site:'global',async get<T>(path:string){const rows=Array.from({length:100},(_,i)=>[String(end-(page*100+i+1)*60000),'1','1','1','1','0','0','0','0']) as T[]; page++; return {ok:true as const,endpoint:path,rows,raw:{endpoint:path,receivedAt:'1970-03-12T00:00:00.000Z',status:200,body:JSON.stringify(rows)}}}};
+  const manifest=await collectHistory(fake,{...expected,start:0,end,asOf:end,limit:100,maxPages:100,capturedAt:'1970-03-12T00:00:00.000Z'}); assert.ok(manifest.gaps.length>110004);
+  const id=saveHistory(db,manifest); registry.register({...input,version:2,attemptId:'large-gap',data:{reference:id,sha256:id.slice(8),version:manifest.parsingVersion}});
+  const out=inspectExperimentHistory(db,registry,{experimentId:'experiment:one',version:2,expected}); assert.deepEqual(out.gaps,manifest.gaps);
+ }finally{db.close()}
+});
+
+test('storage failure categories survive with sanitized details',async()=>{
+ const {db,registry}=await setup();try {
+  const {DomainError}=await import('../../src/lib/errors.ts');
+  const broken={get(){throw new DomainError('PERSISTENCE_UNAVAILABLE','secret-storage-sentinel')}};
+  assert.throws(()=>inspectExperimentHistory(db,broken,{experimentId:'experiment:one',version:1,expected}),(e:unknown)=>{assert.ok(e instanceof DomainError);assert.equal(e.code,'PERSISTENCE_UNAVAILABLE');assert.doesNotMatch(String(e)+JSON.stringify(e),/sentinel/);return true});
+  db.close();
+  assert.throws(()=>inspectExperimentHistory(db,registry,{experimentId:'experiment:one',version:1,expected}),(e:unknown)=>{assert.ok(e instanceof DomainError);assert.equal(e.code,'PERSISTENCE_UNAVAILABLE');assert.doesNotMatch(String(e)+JSON.stringify(e),/sqlite|database is not open/i);return true});
+ }finally{if(db.isOpen)db.close()}
+});
