@@ -195,7 +195,14 @@ function toStoredOutcome(db: Db, run: RunRow, assignment: AssignmentRow, outcome
   const prior = toReports(loadAssignments(db, run.id).filter((a) => a.phase < assignment.phase));
   checkEvidenceRefs(report, bundle, prior);
   if (assignment.role === "adversary") checkAdversary(report as AdversaryReport, bundle);
-  if (assignment.role === "synthesis") checkSynthesis(report as SynthesisReport, bundle, prior);
+  if (assignment.role === "synthesis") {
+    const synthesis = report as SynthesisReport;
+    checkSynthesis(synthesis, bundle, prior);
+    const context = getMethodContext(db, run.id);
+    if (context?.instrument && synthesis.candidates.some((candidate) => candidate.instId !== context.instrument || candidate.product !== context.product)) {
+      throw new DomainError("INVALID_INPUT", "candidate is outside the research scope", [{ ruleId: "research.candidate_scope", field: "candidates" }]);
+    }
+  }
 
   const sourceEvidenceIds: Record<string, string> = {};
   for (const source of report.sources) {

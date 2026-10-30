@@ -45,8 +45,9 @@ test('method context reaches later phases, foreign refs and conflicting revision
 });
 
 test('legacy database migrates transactionally without changing existing content', async () => {
- const {DatabaseSync}=await import('node:sqlite'); const {mkdtempSync,rmSync}=await import('node:fs'); const {tmpdir}=await import('node:os'); const {join}=await import('node:path'); const {SCHEMA}=await import('../../src/store/schema.ts');
- const dir=mkdtempSync(join(tmpdir(),'taoalpha-migration-')); const path=join(dir,'old.db');
+ const {DatabaseSync}=await import('node:sqlite'); const {mkdtempSync,realpathSync,rmSync}=await import('node:fs'); const {tmpdir}=await import('node:os'); const {isAbsolute,join,relative}=await import('node:path'); const {SCHEMA}=await import('../../src/store/schema.ts');
+ const dir=realpathSync(mkdtempSync(join(tmpdir(),'taoalpha-migration-'))); const withinTemp=relative(realpathSync(tmpdir()),dir);
+ assert.ok(withinTemp && !withinTemp.startsWith('..') && !isAbsolute(withinTemp)); const path=join(dir,'old.db');
  try { const old=new DatabaseSync(path); for(const statement of SCHEMA) old.exec(statement); old.prepare('INSERT INTO evidence_bundles VALUES (?, ?, ?, ?)').run('bundle-old','2026-01-01T00:00:00Z','{}','old-hash'); old.close();
  const migrated=openDb(path); assert.equal((migrated.prepare('SELECT content FROM evidence_bundles WHERE id = ?').get('bundle-old') as {content:string}).content,'{}'); assert.equal((migrated.prepare('SELECT count(*) AS n FROM schema_migrations').get() as {n:number}).n,2); migrated.close();
  const again=openDb(path); assert.equal((again.prepare('SELECT count(*) AS n FROM schema_migrations').get() as {n:number}).n,2); again.close();
@@ -74,4 +75,22 @@ test('broad research tracks method gaps separately for multiple candidate drafts
  const base={clientRef:'one',runId:run.runId,scope:{kind:'candidate',draftId:cards[0]!.draftId},principalConflict:'unknown',dominantSide:'unknown',mechanismHypothesis:'unknown',alternativeExplanations:[],supportRefs:[],counterRefs:[],unknowns:['unknown'],invalidationConditions:['unknown'],reviewAfter:null,conclusion:'candidate',reason:'unknown',reasons:{returnMechanism:'unknown',currentConditions:'unknown',evidenceUnknowns:'unknown',invalidation:'unknown',costRisk:'unknown'},priorRecordId:null};
  createMethodRecord(db,base,now); assert.deepEqual(getRun(db,run.runId).missingMethodScopes,[cards[1]!.draftId]); assert.equal(getRun(db,run.runId).methodRecordGap,true);
  createMethodRecord(db,{...base,clientRef:'two',scope:{kind:'candidate',draftId:cards[1]!.draftId}},now); assert.deepEqual(getRun(db,run.runId).missingMethodScopes,[]); assert.equal(getRun(db,run.runId).methodRecordGap,false); db.close();
+});
+
+test('a scoped research run rejects out-of-scope candidates before sealing its decision', async () => {
+ const {adversaryReport,fundamentalsReport,marketStructureReport,quantReport,synthesisReport}=await import('../helpers/research-fixtures.ts');
+ const {getRun}=await import('../../src/research/research-service.ts');
+ const db=openDb(':memory:'); const scan=await seedBundle(db); const ref=scan.candidates.find(c=>c.instId==='GOOD-USDT')!.snapshotEvidenceId;
+ const run=startResearch(db,{bundleId:scan.bundleId,agentMode:'serial_degraded',methodContext:{schemaVersion:1,methodVersion:'v1',instrument:'GOOD-USDT',product:'spot',observationResolution:null,evaluationHorizon:null}},now);
+ const reports={market_structure:marketStructureReport(ref),fundamentals_events:fundamentalsReport(ref),quant_validation:quantReport(ref),adversary:adversaryReport(ref)};
+ for(let phase=0;phase<2;phase++) for(const task of nextTasks(db,run.runId)) completeTask(db,{assignmentId:task.assignmentId,outcome:{kind:'report',report:reports[task.role as keyof typeof reports]}},now);
+ const task=nextTasks(db,run.runId)[0]!;
+ const candidate={instId:'GOOD-USDT',product:'spot',direction:'long'} as const;
+ const outside={instId:'GOOD-USDT-SWAP',product:'usdt_perpetual',direction:'long'} as const;
+ assert.throws(()=>completeTask(db,{assignmentId:task.assignmentId,outcome:{kind:'report',report:synthesisReport(ref,{candidates:[candidate,outside]})}},now), /scope/i);
+ assert.equal(getRun(db,run.runId).decision,null);
+ assert.equal(nextTasks(db,run.runId)[0]?.assignmentId,task.assignmentId);
+ const result=completeTask(db,{assignmentId:task.assignmentId,outcome:{kind:'report',report:synthesisReport(ref,{candidates:[candidate]})}},now);
+ assert.equal(result.decision?.draftCards.length,1);
+ db.close();
 });
