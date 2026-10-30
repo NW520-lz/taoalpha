@@ -208,3 +208,10 @@ export const MIGRATION_4: string[] = [
   WHEN EXISTS (SELECT 1 FROM risk_capital_reconciliation_locks WHERE scope_id=NEW.scope_id)
   BEGIN SELECT RAISE(ABORT,'capital reconciliation required'); END`,
 ];
+
+/** Migration 5: old writers cannot insert an observation older than known capital. */
+export const MIGRATION_5: string[] = [
+ `CREATE TRIGGER IF NOT EXISTS risk_observation_before_capital_guard BEFORE INSERT ON risk_equity_observations
+  WHEN EXISTS (SELECT 1 FROM risk_capital_events WHERE scope_id=NEW.scope_id AND occurred_ms>NEW.observed_ms)
+  BEGIN SELECT RAISE(ABORT,'observation predates known capital'); END`,
+];

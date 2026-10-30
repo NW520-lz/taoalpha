@@ -1,7 +1,7 @@
 import { DatabaseSync } from "node:sqlite";
 import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
-import { SCHEMA, MIGRATION_1, MIGRATION_2, MIGRATION_3, MIGRATION_4 } from "./schema.ts";
+import { SCHEMA, MIGRATION_1, MIGRATION_2, MIGRATION_3, MIGRATION_4, MIGRATION_5 } from "./schema.ts";
 
 export type Db = DatabaseSync;
 export type SqlParam = null | number | bigint | string;
@@ -29,6 +29,10 @@ export function openDb(path: string): Db {
     if (!db.prepare("SELECT version FROM schema_migrations WHERE version = 4").get()) {
       for (const statement of MIGRATION_4) db.exec(statement);
       db.exec(`INSERT INTO schema_migrations VALUES (4, CURRENT_TIMESTAMP)`);
+    }
+    if (!db.prepare("SELECT version FROM schema_migrations WHERE version = 5").get()) {
+      for (const statement of MIGRATION_5) db.exec(statement);
+      db.exec(`INSERT INTO schema_migrations VALUES (5, CURRENT_TIMESTAMP)`);
     }
   });
   return db;

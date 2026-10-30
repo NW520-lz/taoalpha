@@ -144,6 +144,43 @@ test("a prior observation cannot be replayed after a newer hard stop", () => {
   assert.equal(observe("500").state,"hard_stopped"); db.close();
 });
 
+test("a newly recorded capital event after the latest observation makes that replay stale",()=>{
+  const {db,scopeId,observe}=setup();const first=observe('500');
+  recordConfirmedCapitalEvent(db,{scopeId,exchangeRef:'newer-capital',kind:'deposit',amountUsdt:'50',occurredAt:'2026-10-28T00:02:00Z'});
+  const replay={scopeId,sourceRef:'snapshot-1',observedAt:first.observedAt,equityUsdt:'500',accountReconciled:true,capitalHistoryReconciled:true};
+  expectDomainError(()=>observeEquity(db,replay),'DATA_NOT_READY',{ruleId:'risk.observation_before_capital'});
+  const next=observe('550');assert.equal(next.netPnlUsdt,'0');assert.equal(next.blockNewRisk,false);db.close();
+});
+
+test("an observation before already-recorded capital cannot be used as a current risk result",()=>{
+  const {db,scopeId}=setup();
+  recordConfirmedCapitalEvent(db,{scopeId,exchangeRef:'future-capital',kind:'deposit',amountUsdt:'50',occurredAt:'2026-10-28T00:02:00Z'});
+  const before={scopeId,sourceRef:'before',observedAt:'2026-10-28T00:01:00Z',equityUsdt:'500',accountReconciled:true,capitalHistoryReconciled:true};
+  expectDomainError(()=>observeEquity(db,before),'DATA_NOT_READY',{ruleId:'risk.observation_before_capital'});
+  db.prepare("INSERT INTO risk_loss_write_authorizations (id,scope_id,kind) VALUES (?,?,'observation')").run('old-style',scopeId);
+  assert.throws(()=>db.prepare("INSERT INTO risk_equity_observations (id,scope_id,source_ref,observed_at,observed_ms,equity_usdt,account_reconciled,capital_history_reconciled,input_hash,result_json) VALUES (?,?,?,?,?,?,?,?,?,?)")
+    .run('old-style',scopeId,'legacy','2026-10-28T00:01:00Z',Date.parse('2026-10-28T00:01:00Z'),'500',1,1,'hash','{}'),/observation predates known capital/);
+  const after=observeEquity(db,{...before,sourceRef:'after',observedAt:'2026-10-28T00:03:00Z',equityUsdt:'550'});
+  assert.equal(after.netPnlUsdt,'0');assert.equal(after.blockNewRisk,false);db.close();
+});
+
+test("migration 5 installs the future-capital guard on a v4 database without rewriting history",(t)=>{
+  const dir=mkdtempSync(join(tmpdir(),'taoalpha-capital-v5-'));const resolved=realpathSync(dir);const rel=relative(realpathSync(tmpdir()),resolved);
+  assert.ok(rel && !rel.startsWith('..') && !isAbsolute(rel));t.after(()=>rmSync(resolved,{recursive:true,force:true}));
+  const path=join(resolved,'ledger.db');let db=openDb(path);
+  initializeLossScope(db,{scopeId:'scope',policy,baselineRef:'baseline',at:'2026-10-28T00:00:00Z'});
+  const before={scopeId:'scope',sourceRef:'before',observedAt:'2026-10-28T00:01:00Z',equityUsdt:'500',accountReconciled:true,capitalHistoryReconciled:true};
+  const historical=observeEquity(db,before);
+  recordConfirmedCapitalEvent(db,{scopeId:'scope',exchangeRef:'later',kind:'deposit',amountUsdt:'50',occurredAt:'2026-10-28T00:02:00Z'});
+  db.exec('DROP TRIGGER risk_observation_before_capital_guard; DELETE FROM schema_migrations WHERE version=5');db.close();
+  db=openDb(path);
+  expectDomainError(()=>observeEquity(db,before),'DATA_NOT_READY',{ruleId:'risk.observation_before_capital'});
+  const saved=JSON.parse(db.prepare('SELECT result_json FROM risk_equity_observations WHERE id=?').get(historical.observationId)!.result_json as string) as {netPnlUsdt:string};
+  assert.equal(saved.netPnlUsdt,'0');
+  const after=observeEquity(db,{...before,sourceRef:'after',observedAt:'2026-10-28T00:03:00Z',equityUsdt:'550'});
+  assert.equal(after.netPnlUsdt,'0');assert.equal(after.blockNewRisk,false);db.close();
+});
+
 test("even the latest observation cannot replay as active if a later risk event exists",()=>{
   const {db,scopeId,observe}=setup();const first=observe("500");
   db.prepare("INSERT INTO risk_loss_events (id,scope_id,observation_id,kind,loss_usdt,created_at) VALUES (?,?,?,?,?,?)")
@@ -196,8 +233,8 @@ test("migration quarantines previously overlapping capital and observations when
   recordConfirmedCapitalEvent(db,{scopeId:"existing",exchangeRef:"capital",kind:"deposit",amountUsdt:"1",occurredAt:"2026-10-28T00:00:30Z"});
   const input={scopeId:"existing",sourceRef:"observation",observedAt:"2026-10-28T00:01:00Z",equityUsdt:"501",accountReconciled:true,capitalHistoryReconciled:true};
   assert.equal(observeEquity(db,input).blockNewRisk,false);
-  recordConfirmedCapitalEvent(db,{scopeId:"future",exchangeRef:"future-capital",kind:"deposit",amountUsdt:"1",occurredAt:"2026-10-28T00:02:00Z"});
   observeEquity(db,{...input,scopeId:"future"});
+  recordConfirmedCapitalEvent(db,{scopeId:"future",exchangeRef:"future-capital",kind:"deposit",amountUsdt:"1",occurredAt:"2026-10-28T00:02:00Z"});
   // Simulate the pre-migration v2 ledger, preserving scope, events, and observations.
   db.exec("DROP TRIGGER risk_late_capital_lock; DROP TRIGGER risk_observation_late_capital_guard; DROP TRIGGER risk_capital_locks_no_update; DROP TRIGGER risk_capital_locks_no_delete; DROP TABLE risk_capital_reconciliation_locks; DELETE FROM schema_migrations WHERE version=4");
   db.close();db=openDb(path);
@@ -275,9 +312,12 @@ test("profit after a high-water mark does not trigger an initial-capital loss li
 
 test("a funding event after an equity snapshot cannot change that earlier snapshot's PnL", () => {
   const { db, scopeId } = setup();
-  recordConfirmedCapitalEvent(db, { scopeId, exchangeRef: "future-funding", kind: "deposit", amountUsdt: "50", occurredAt: "2026-10-28T00:03:00Z" });
   const before = observeEquity(db, { scopeId, sourceRef: "before", observedAt: "2026-10-28T00:01:00Z", equityUsdt: "500", accountReconciled: true, capitalHistoryReconciled: true });
   assert.equal(before.netPnlUsdt, "0");
+  recordConfirmedCapitalEvent(db, { scopeId, exchangeRef: "future-funding", kind: "deposit", amountUsdt: "50", occurredAt: "2026-10-28T00:03:00Z" });
+  const stored = JSON.parse(db.prepare("SELECT result_json FROM risk_equity_observations WHERE id=?").get(before.observationId)!.result_json as string) as {netPnlUsdt:string};
+  assert.equal(stored.netPnlUsdt,"0", "the historical PnL is not rewritten with later funding");
+  expectDomainError(() => observeEquity(db, { scopeId, sourceRef: "before", observedAt: "2026-10-28T00:01:00Z", equityUsdt: "500", accountReconciled: true, capitalHistoryReconciled: true }), "DATA_NOT_READY", { ruleId: "risk.observation_before_capital" });
   const after = observeEquity(db, { scopeId, sourceRef: "after", observedAt: "2026-10-28T00:04:00Z", equityUsdt: "550", accountReconciled: true, capitalHistoryReconciled: true });
   assert.equal(after.netPnlUsdt, "0");
   assert.equal(after.state, "active");
