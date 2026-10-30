@@ -183,3 +183,14 @@ test('CLI exposes isolated conflict fingerprints after the phase closes',async()
  assert.deepEqual(await call(deps,'research','conflicts',run.runId),[]);
  for(const t of tasks.slice(1)) await call(deps,'research','submit',t.assignmentId,'--failed','unavailable'); const rows=await call<unknown[]>(deps,'research','conflicts',run.runId); assert.equal(rows.length,1); assert.ok(!JSON.stringify(rows).includes('secret-sentinel')); deps.db.close();
 });
+
+test('CLI hides malformed conflict report field names',async()=>{
+ const {deps,dir}=setup(); const scan=await call<ScanResult>(deps,'scan'); const run=await call<ResearchRunView>(deps,'research','start','--bundle',scan.bundleId,'--agent-mode','serial_degraded');
+ const tasks=await call<ResearchTask[]>(deps,'research','tasks',run.runId); const task=tasks[0]!;
+ await call(deps,'research','submit',task.assignmentId,'--failed','first');
+ const report={...marketStructureReport(scan.candidates[0]!.snapshotEvidenceId),'synthetic-secret-sentinel':'value'};
+ const result=await runCli(['research','submit',task.assignmentId,'--file',writeJson(dir,'conflict.json',report)],deps);
+ assert.equal(result.ok,false); assert.equal(result.error?.code,'INVALID_INPUT');
+ assert.deepEqual(result.error?.violations,[{ruleId:'research.conflict_schema'}]);
+ assert.doesNotMatch(JSON.stringify(result),/synthetic-secret-sentinel/); deps.db.close();
+});

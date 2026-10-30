@@ -345,7 +345,10 @@ function saveSubmissionConflict(db:Db, assignment:AssignmentRow, outcome:Submitt
   let serialized:string; try { serialized=JSON.stringify(outcome); } catch { throw new DomainError("INVALID_INPUT","invalid conflict outcome",[{ruleId:"research.conflict_schema"}]); }
   if(typeof serialized!=="string" || Buffer.byteLength(serialized,"utf8")>32768 || !outcome || typeof outcome!=="object") throw new DomainError("INVALID_INPUT","invalid conflict outcome",[{ruleId:"research.conflict_schema"}]);
   const keys=Object.keys(outcome).sort().join(',');
-  if(outcome.kind==='report' && keys==='kind,report') parseReport(assignment.role,outcome.report);
+  if(outcome.kind==='report' && keys==='kind,report') {
+    try { parseReport(assignment.role,outcome.report); }
+    catch { throw new DomainError("INVALID_INPUT","invalid conflict outcome",[{ruleId:"research.conflict_schema"}]); }
+  }
   else if(outcome.kind==='failed' && keys==='kind,reason' && typeof outcome.reason==='string' && outcome.reason.trim() && outcome.reason.length<=2000) { /* metadata only */ }
   else throw new DomainError("INVALID_INPUT","invalid conflict outcome",[{ruleId:"research.conflict_schema"}]);
   const previous=getRow<{id:string}>(db,'SELECT id FROM research_submission_conflicts WHERE assignment_id = ? AND payload_sha256 = ?',assignment.id,payloadSha256); if(previous) return;
