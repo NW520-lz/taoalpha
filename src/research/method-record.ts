@@ -13,13 +13,20 @@ export const methodContextSchema = z.object({ schemaVersion:z.literal(1), method
 export type MethodContextInput = z.infer<typeof methodContextSchema>;
 export type FrozenMethodContext = MethodContextInput & { bundle: {id:string; sha256:string}; scanConfiguration: ScanContent['strategy']; strategyValidation: 'unverified' };
 const ref = z.object({id:text, sha256:z.string().regex(/^[a-f0-9]{64}$/)}).strict();
+const reasonClaim = z.discriminatedUnion('kind', [
+ z.object({kind:z.literal('observation'),text,refs:z.array(ref).min(1).max(20)}).strict(),
+ z.object({kind:z.literal('inference'),text,refs:z.array(ref).max(20)}).strict(),
+ z.object({kind:z.literal('unknown'),text,refs:z.array(ref).max(20)}).strict(),
+]);
+const reasonClaims = z.array(reasonClaim).min(1).max(20);
+const reasonEvidence = z.object({returnMechanism:reasonClaims,currentConditions:reasonClaims,evidenceUnknowns:reasonClaims,invalidation:reasonClaims,costRisk:reasonClaims}).strict();
 export const methodRecordSchema = z.object({
  clientRef:text, runId:text, scope:z.discriminatedUnion('kind', [z.object({kind:z.literal('candidate'), draftId:text}).strict(), z.object({kind:z.enum(['wait','skip'])}).strict()]),
  principalConflict:text, dominantSide:text, mechanismHypothesis:text, alternativeExplanations:z.array(text), supportRefs:z.array(ref), counterRefs:z.array(ref), unknowns:z.array(text), invalidationConditions:z.array(text), reviewAfter:z.iso.datetime({offset:true}).nullable(), conclusion:text, reason:text,
- reasons:z.object({returnMechanism:text,currentConditions:text,evidenceUnknowns:text,invalidation:text,costRisk:text}).strict(), priorRecordId:text.nullable(),
+ reasons:z.object({returnMechanism:text,currentConditions:text,evidenceUnknowns:text,invalidation:text,costRisk:text}).strict(), reasonEvidence:reasonEvidence.optional(), priorRecordId:text.nullable(),
 }).strict();
 export type MethodRecordInput = z.infer<typeof methodRecordSchema>;
-export type MethodRecord = MethodRecordInput & { id:string; schemaVersion:1; createdAt:string; bundle:{id:string;sha256:string}; methodVersion:string; decisionSha256:string; contentSha256:string; interpretationStatus:'unverified'; mechanismHypothesisKind:'inference'; executable:false };
+export type MethodRecord = MethodRecordInput & { id:string; schemaVersion:1|2; createdAt:string; bundle:{id:string;sha256:string}; methodVersion:string; decisionSha256:string; contentSha256:string; interpretationStatus:'unverified'; mechanismHypothesisKind:'inference'; executable:false };
 const invalid = (ruleId:string): never => { throw new DomainError('INVALID_INPUT', 'Research method input or evidence is invalid.', [{ruleId}]); };
 function parse<T>(schema:z.ZodType<T>, value:unknown):T { const r=schema.safeParse(value); return r.success ? r.data : invalid('research.method_schema'); }
 export function parseMethodContext(input:unknown,bundle:StoredBundle):FrozenMethodContext {
@@ -55,8 +62,8 @@ export function createMethodRecord(db:Db, raw:unknown, now:()=>Date):MethodRecor
   const sources=allRows<{id:string}>(db,"SELECT id FROM evidence_items WHERE submitted_by LIKE ?",`research:${input.runId}:%`).map(r=>r.id);
   const allowed=new Set([...scan.candidates.map(c=>c.snapshotEvidenceId),...sources]);
   const seen=new Map<string,string>();
-  for(const r of [...input.supportRefs,...input.counterRefs]) { const prev=seen.get(r.id); if(prev && prev!==r.sha256) return invalid('research.method_refs'); seen.set(r.id,r.sha256); const e=getEvidence(db,r.id); if(!allowed.has(r.id)||!e||e.contentSha256!==r.sha256||hashJson(e.content)!==r.sha256) return invalid('research.method_refs'); }
-  const base={...input,id:newId('method'),schemaVersion:1 as const,createdAt:now().toISOString(),bundle:context.bundle,methodVersion:context.methodVersion,decisionSha256:seal.decision_sha256,interpretationStatus:'unverified' as const,mechanismHypothesisKind:'inference' as const,executable:false as const};
+  for(const r of [...input.supportRefs,...input.counterRefs,...claimRefs(input.reasonEvidence)]) { const prev=seen.get(r.id); if(prev && prev!==r.sha256) return invalid('research.method_refs'); seen.set(r.id,r.sha256); const e=getEvidence(db,r.id); if(!allowed.has(r.id)||!e||e.contentSha256!==r.sha256||hashJson(e.content)!==r.sha256) return invalid('research.method_refs'); }
+  const base={...input,id:newId('method'),schemaVersion:input.reasonEvidence ? 2 as const : 1 as const,createdAt:now().toISOString(),bundle:context.bundle,methodVersion:context.methodVersion,decisionSha256:seal.decision_sha256,interpretationStatus:'unverified' as const,mechanismHypothesisKind:'inference' as const,executable:false as const};
   const record={...base,contentSha256:hashJson(base)};
   db.prepare('INSERT INTO decision_method_records VALUES (?, ?, ?, ?, ?)').run(record.id,input.runId,input.clientRef,JSON.stringify(record),record.contentSha256);
   return record;
@@ -69,6 +76,10 @@ export function getMethodRecord(db:Db,id:string):MethodRecord {
  if(!run?.decision || !seal || seal.decision_sha256!==record.decisionSha256 || hashJson(JSON.parse(run.decision))!==record.decisionSha256) return invalid('research.decision_hash');
  const context=getMethodContext(db,record.runId); if (!context || context.bundle.id!==record.bundle.id || context.bundle.sha256!==record.bundle.sha256 || context.methodVersion!==record.methodVersion) return invalid('research.method_hash');
  const bundle=getBundle(db,record.bundle.id)!; const allowed=new Set([...(bundle.content as ScanContent).candidates.map(c=>c.snapshotEvidenceId),...allRows<{id:string}>(db,"SELECT id FROM evidence_items WHERE submitted_by LIKE ?",`research:${record.runId}:%`).map(r=>r.id)]);
- for(const ref of [...record.supportRefs,...record.counterRefs]) { const e=getEvidence(db,ref.id); if(!allowed.has(ref.id) || !e || e.contentSha256!==ref.sha256 || hashJson(e.content)!==ref.sha256) return invalid('research.method_refs'); }
+ for(const ref of [...record.supportRefs,...record.counterRefs,...claimRefs(record.reasonEvidence)]) { const e=getEvidence(db,ref.id); if(!allowed.has(ref.id) || !e || e.contentSha256!==ref.sha256 || hashJson(e.content)!==ref.sha256) return invalid('research.method_refs'); }
  return record;
+}
+
+function claimRefs(evidence: MethodRecordInput['reasonEvidence']): Array<z.infer<typeof ref>> {
+ return evidence ? Object.values(evidence).flatMap(claims => claims.flatMap(claim => claim.refs)) : [];
 }

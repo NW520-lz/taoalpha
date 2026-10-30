@@ -19,6 +19,8 @@ test('method context is frozen into each independent task and records are immuta
  const ref = { id: candidate.snapshotEvidenceId, sha256: evidence.content_sha256 };
  const input = { clientRef:'test-1', runId:run.runId, scope:{kind:'wait'}, principalConflict:'unknown', dominantSide:'unknown', mechanismHypothesis:'unknown', alternativeExplanations:[], supportRefs:[ref], counterRefs:[], unknowns:['cost'], invalidationConditions:['unknown'], reviewAfter:null, conclusion:'wait', reason:'unknown', reasons:{returnMechanism:'unknown', currentConditions:'unknown', evidenceUnknowns:'unknown', invalidation:'unknown', costRisk:'unknown'}, priorRecordId:null };
  const record = createMethodRecord(db, input, now);
+ assert.equal(record.schemaVersion,1);
+ assert.deepEqual(getRun(db,run.runId).missingReasonEvidenceScopes,['wait']);
  assert.deepEqual(createMethodRecord(db, input, now), record);
  assert.deepEqual(getMethodRecord(db, record.id), record);
  assert.throws(() => createMethodRecord(db, {...input, clientRef:'test-2', supportRefs:[{...ref,sha256:'0'.repeat(64)}]}, now));
@@ -70,6 +72,31 @@ test('a sealed decision cannot disappear before any method record exists', async
  while(nextTasks(db,run.runId).length) for(const task of nextTasks(db,run.runId)) completeTask(db,{assignmentId:task.assignmentId,outcome:{kind:'failed',reason:'unavailable'}},now);
  db.prepare('UPDATE research_runs SET decision = NULL WHERE id = ?').run(run.runId);
  assert.throws(()=>getRun(db,run.runId), /decision hash mismatch/);
+ db.close();
+});
+
+test('each of the five reasons can carry independently referenced, unverified claims', async () => {
+ const db=openDb(':memory:'); const scan=await seedBundle(db);
+ const run=startResearch(db,{bundleId:scan.bundleId,agentMode:'serial_degraded',methodContext:{schemaVersion:1,methodVersion:'v1',instrument:null,product:null,observationResolution:null,evaluationHorizon:null}},now);
+ while(nextTasks(db,run.runId).length) for(const task of nextTasks(db,run.runId)) completeTask(db,{assignmentId:task.assignmentId,outcome:{kind:'failed',reason:'unavailable'}},now);
+ const item=scan.candidates[0]!; const ev=db.prepare('SELECT content_sha256 FROM evidence_items WHERE id = ?').get(item.snapshotEvidenceId) as {content_sha256:string};
+ const reference={id:item.snapshotEvidenceId,sha256:ev.content_sha256};
+ const observed={kind:'observation',text:'reported market observation',refs:[reference]};
+ const inference={kind:'inference',text:'possible mechanism',refs:[reference]};
+ const unknown={kind:'unknown',text:'cost not known',refs:[]};
+ const input={clientRef:'structured',runId:run.runId,scope:{kind:'wait'},principalConflict:'unknown',dominantSide:'unknown',mechanismHypothesis:'unknown',alternativeExplanations:[],supportRefs:[],counterRefs:[],unknowns:['unknown'],invalidationConditions:['unknown'],reviewAfter:null,conclusion:'wait',reason:'unknown',reasons:{returnMechanism:'unknown',currentConditions:'unknown',evidenceUnknowns:'unknown',invalidation:'unknown',costRisk:'unknown'},reasonEvidence:{returnMechanism:[inference],currentConditions:[observed],evidenceUnknowns:[unknown],invalidation:[unknown],costRisk:[unknown]},priorRecordId:null};
+ assert.deepEqual(getRun(db,run.runId).missingReasonEvidenceScopes,['wait']);
+ const record=createMethodRecord(db,input,now);
+ assert.deepEqual(record.reasonEvidence,input.reasonEvidence);
+ assert.equal(record.schemaVersion,2);
+ assert.equal(record.interpretationStatus,'unverified');
+ assert.deepEqual(getRun(db,run.runId).missingReasonEvidenceScopes,[]);
+ assert.deepEqual(createMethodRecord(db,input,now),record);
+ assert.throws(()=>createMethodRecord(db,{...input,clientRef:'bad-observation',reasonEvidence:{...input.reasonEvidence,currentConditions:[{...observed,refs:[]}]}},now));
+ assert.throws(()=>createMethodRecord(db,{...input,clientRef:'bad-hash',reasonEvidence:{...input.reasonEvidence,currentConditions:[{...observed,refs:[{...reference,sha256:'0'.repeat(64)}]}]}},now));
+ db.exec('DROP TRIGGER evidence_items_no_update');
+ db.prepare('UPDATE evidence_items SET content_sha256 = ? WHERE id = ?').run('0'.repeat(64),reference.id);
+ assert.throws(()=>getMethodRecord(db,record.id));
  db.close();
 });
 

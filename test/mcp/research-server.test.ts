@@ -314,5 +314,13 @@ test("method tools share research state and reject forged context and extra fiel
  const input={clientRef:"mcp-test",runId:run.runId,scope:{kind:"wait"},principalConflict:"unknown",dominantSide:"unknown",mechanismHypothesis:"unknown",alternativeExplanations:[],supportRefs:[],counterRefs:[],unknowns:["unknown"],invalidationConditions:["unknown"],reviewAfter:null,conclusion:"wait",reason:"unknown",reasons:{returnMechanism:"unknown",currentConditions:"unknown",evidenceUnknowns:"unknown",invalidation:"unknown",costRisk:"unknown"},priorRecordId:null};
  const record=await value<{id:string;executable:boolean}>(client,"taoalpha_method_create",input); assert.equal(record.executable,false);
  assert.deepEqual(await value(client,"taoalpha_method_get",{recordId:record.id}),record);
+ const unknown={kind:'unknown',text:'not established',refs:[]};
+ const reasonEvidence={returnMechanism:[unknown],currentConditions:[unknown],evidenceUnknowns:[unknown],invalidation:[unknown],costRisk:[unknown]};
+ const structured=await value<{id:string;schemaVersion:number;reasonEvidence:unknown;interpretationStatus:string}>(client,"taoalpha_method_create",{...input,clientRef:'structured',reasonEvidence});
+ assert.equal(structured.schemaVersion,2); assert.equal(structured.interpretationStatus,'unverified'); assert.deepEqual(structured.reasonEvidence,reasonEvidence);
+ assert.deepEqual((await value<ResearchRunView>(client,"taoalpha_research_get",{runId:run.runId})).missingReasonEvidenceScopes,[]);
+ const badObservation=await call(client,"taoalpha_method_create",{...input,clientRef:'bad-claim',reasonEvidence:{...reasonEvidence,currentConditions:[{kind:'observation',text:'synthetic-private-sentinel',refs:[]}]}});
+ assert.deepEqual(badObservation.error?.violations,[{ruleId:'mcp.input_schema'}]);
+ assert.doesNotMatch(JSON.stringify(badObservation),/synthetic-private-sentinel/);
  assert.ok(calls.every(c=>!c.includes("trade")));
 });

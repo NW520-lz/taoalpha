@@ -61,6 +61,8 @@ export interface ResearchRunView {
   methodContext: FrozenMethodContext | null;
   methodRecordGap: boolean;
   missingMethodScopes: string[];
+  /** Structured claim labels and references remain author-supplied and unverified. */
+  missingReasonEvidenceScopes: string[];
 }
 
 interface RunRow {
@@ -165,6 +167,7 @@ export function getRun(db: Db, runId: string): ResearchRunView {
   const records = allRows<{id:string}>(db, "SELECT id FROM decision_method_records WHERE run_id = ?",runId).map(r=>getMethodRecord(db,r.id));
   const scopes = decision ? [...decision.draftCards.map(c=>c.draftId), ...(decision.finalDecision === "wait" || decision.finalDecision === "skip" ? [decision.finalDecision] : [])] : [];
   const missingMethodScopes = scopes.filter(scope=>!records.some(r=>r.scope.kind === scope || (r.scope.kind === "candidate" && r.scope.draftId === scope)));
+  const missingReasonEvidenceScopes = scopes.filter(scope=>!records.some(r=>r.reasonEvidence && (r.scope.kind === scope || (r.scope.kind === "candidate" && r.scope.draftId === scope))));
   return {
     runId: run.id,
     bundleId: run.bundle_id,
@@ -181,6 +184,7 @@ export function getRun(db: Db, runId: string): ResearchRunView {
     methodContext,
     methodRecordGap: decision === null ? false : missingMethodScopes.length > 0,
     missingMethodScopes,
+    missingReasonEvidenceScopes,
   };
 }
 
