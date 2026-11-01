@@ -25,7 +25,9 @@ const schema=z.strictObject({experimentId:reference,version,attemptId:reference,
  gates:evaluationGatesSchema.optional()
 }).refine(v=>{const {exploration:a,validation:b,evaluation:c}=v.windows; const t=[a.start,a.end,b.start,b.end,c.start,c.end].map(Date.parse); return t.every(Number.isFinite) && t[0]!<t[1]! && t[1]!<=t[2]! && t[2]!<t[3]! && t[3]!<=t[4]! && t[4]!<t[5]!})
  .refine(v=>v.replay===undefined || v.data.scope?.product===v.replay.market.product)
- .refine(v=>v.gates===undefined || v.replay!==undefined);
+ .refine(v=>v.gates===undefined || v.replay!==undefined)
+ // Stressed costs must stay a valid share of notional (at most 100% per side).
+ .refine(v=>!v.gates?.costStressMultipliers || !v.replay || Math.max(...Object.values(v.replay.cost).filter((c):c is number=>typeof c==='number'))*Math.max(...v.gates.costStressMultipliers)<=1000000);
 type Input=z.infer<typeof schema>;
 export type ExperimentRegistration=Input & {schemaVersion:1|2|3;registeredAt:string;contentSha256:string;status:'unvalidated';dataAvailability:'unverified';executionAuthorized:false};
 interface Row {experiment_id:string;version:number;attempt_id:string;content:string;content_sha256:string}

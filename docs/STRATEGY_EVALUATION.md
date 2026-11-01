@@ -20,3 +20,13 @@
 - `met`：以上都不成立。
 
 `reasons` 先列失败原因，再列不足原因。只有文字门槛的登记返回 `blocked` / `rules_incomplete`。本接口不产生 `passed`，整体状态仍为 `insufficient`；验证窗口可以重复查看，查看次数不记录。
+
+## 成本压力与基准
+
+`gates.costStressMultipliers` 冻结一组严格递增、首项为 1 的整数倍数（最多 10 个）。登记时检查放大后的每端手续费或冲击不超过名义金额的 100%。`compareWithBaselines(db, registry, {experimentId, version, expected, window})` 对探索或验证窗口返回：
+
+- `costStress`：手续费与冲击各乘以倍数后重新回放的窗口指标，各端仍只计一次。
+- `hold`：用同样数量和成本模型，在窗口第一根开盘买入、最后一根收盘卖出；缺口期间继续持有；回撤按逐根收盘的毛估值从 0 起算。它是逐根估值，而策略回撤只按已实现出场计算，两者口径不同。
+- `noTrade`：净收益与回撤均为 0。
+
+未登记倍数时返回 `blocked` / `rules_incomplete`；最终评价窗口仍封存。

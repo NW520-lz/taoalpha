@@ -59,15 +59,20 @@ export function loadRegisteredExperiment(db:Db,registry:Registry,request:Request
 }
 export type LoadedExperiment=ReturnType<typeof loadRegisteredExperiment>;
 
+/** Candles of a registered window: whole bars only, gaps left as they are. */
+export function windowCandles(loaded:LoadedExperiment,name:WindowName) {
+ const window=loaded.registration.windows[name];
+ const range={start:Date.parse(window.start),end:Date.parse(window.end)};
+ return {range,candles:loaded.manifest.candles.filter(c=>c.ts>=range.start && c.closeTime<=range.end)};
+}
+
 /** Replays one registered window with the given parameters (the registered ones unless overridden). */
 export function replayWindow(loaded:LoadedExperiment,name:WindowName,replay:TrendReplay|undefined=loaded.registration.replay) {
- const {inspection,registration,manifest,resolutionMs,request}=loaded;
- const window=registration.windows[name];
- const range={start:Date.parse(window.start),end:Date.parse(window.end)};
+ const {inspection,registration,resolutionMs,request}=loaded;
+ const {range,candles:inWindow}=windowCandles(loaded,name);
  const base={experimentId:request.experimentId,version:request.version,registrationSha256:registration.contentSha256,scopeBinding:inspection.expectedScopeBinding,history:{reference:inspection.reference,sha256:inspection.sha256},window:name,range,status:'insufficient' as const,executionAuthorized:false as const,unknowns:inspection.unknowns};
  // Prose rules are never interpreted into numbers; only frozen structured parameters run.
  if(!replay) return {...base,outcome:'blocked' as const,reasonCode:'rules_incomplete' as const,segments:[],metrics:null};
- const inWindow=manifest.candles.filter(c=>c.ts>=range.start && c.closeTime<=range.end);
  if(!inWindow.length) return {...base,outcome:'blocked' as const,reasonCode:'missing_required_evidence' as const,segments:[],metrics:null};
  // A missing candle splits the window; no position or signal is carried across a gap.
  const pieces:typeof inWindow[]=[];
