@@ -34,6 +34,7 @@ const schema=z.strictObject({experimentId:reference,version,attemptId:reference,
 }).refine(v=>{const {exploration:a,validation:b,evaluation:c}=v.windows; const t=[a.start,a.end,b.start,b.end,c.start,c.end].map(Date.parse); return t.every(Number.isFinite) && t[0]!<t[1]! && t[1]!<=t[2]! && t[2]!<t[3]! && t[3]!<=t[4]! && t[4]!<t[5]!})
  .refine(v=>v.replay===undefined || (v.data.scope?.product===v.replay.market.product && fundingMatchesProduct(v.replay)))
  .refine(v=>v.gates===undefined || v.replay!==undefined)
+ .refine(v=>!v.replay?.selection || v.universe!==undefined)
  // Universe members differ only by instrument, and regimes are ordered, non-overlapping periods.
  .refine(v=>!v.universe || (v.replay!==undefined && v.data.scope!==undefined
   && new Set(v.universe.instruments.map(i=>i.data.scope.instId)).size===v.universe.instruments.length

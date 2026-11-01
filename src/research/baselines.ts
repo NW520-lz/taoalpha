@@ -2,7 +2,7 @@ import {z} from 'zod';
 import {Decimal} from '../lib/decimal.ts';
 import {DomainError} from '../lib/errors.ts';
 import type {Db} from '../store/db.ts';
-import {fundingCost} from './trend-replay.ts';
+import {fundingCost,tradeCosts} from './trend-replay.ts';
 import {fundingEventsFor,loadRegisteredExperiment,replayWindow,windowCandles,type LoadedExperiment,type Registry,type TrendReplay,type WindowName} from './registered-replay.ts';
 import {parseReplayInput} from './research-evaluation.ts';
 
@@ -16,13 +16,10 @@ function holdBaseline(loaded:LoadedExperiment,name:WindowName,replay:TrendReplay
  const {candles}=windowCandles(loaded,name);
  if(!candles.length) return null;
  const qty=new Decimal(replay.market.baseQuantity), entry=new Decimal(candles[0]!.open), exit=new Decimal(candles.at(-1)!.close);
- const buy=qty.times(entry), sell=qty.times(exit), {cost}=replay;
- const fees=buy.times(cost.entryFeePpm).plus(sell.times(cost.exitFeePpm)).div(1000000);
- const impact=buy.times(cost.entryImpactPpm).plus(sell.times(cost.exitImpactPpm)).div(1000000);
+ const {gross,fees,impact}=tradeCosts(qty,entry,exit,replay.cost);
  const funding=fundingCost(qty,candles,fundingEventsFor(loaded,replay).fundingEvents ?? [],candles[0]!.ts,candles.at(-1)!.closeTime);
  let peak=new Decimal(0), drawdown=new Decimal(0);
  for(const c of candles){const mark=qty.times(new Decimal(c.close).minus(entry));peak=Decimal.max(peak,mark);drawdown=Decimal.max(drawdown,peak.minus(mark));}
- const gross=sell.minus(buy);
  return {entryPrice:entry.toFixed(),exitPrice:exit.toFixed(),grossUsdt:gross.toFixed(),feesUsdt:fees.toFixed(),impactUsdt:impact.toFixed(),fundingUsdt:funding.toFixed(),netUsdt:gross.minus(fees).minus(impact).minus(funding).toFixed(),maxDrawdownUsdt:drawdown.toFixed()};
 }
 

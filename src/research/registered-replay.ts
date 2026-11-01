@@ -32,7 +32,7 @@ const total=(list:Decimal[])=>list.reduce((a,b)=>a.plus(b),new Decimal(0));
  * segment ends is only a close-price mark: at the window end it is reported separately, at a data
  * gap its outcome is unknown and it is only counted. Without realized exits amounts are null, not zero.
  */
-export function tradeMetrics(all:TimedTrade[]) {
+export function tradeMetrics(all:Array<Pick<TimedTrade,'exitReason'|'endsAt'|'grossUsdt'|'feesUsdt'|'impactUsdt'|'fundingUsdt'|'netUsdt'>>) {
  const trades=all.filter(t=>t.exitReason!=='end_of_data');
  const marked=all.filter(t=>t.exitReason==='end_of_data' && t.endsAt==='window_end');
  const sum=(pick:(t:typeof trades[number])=>string)=>total(trades.map(t=>new Decimal(pick(t))));

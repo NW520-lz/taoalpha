@@ -15,7 +15,8 @@ export const windowsAt=(a:number,b:number,c:number)=>({exploration:{start:iso(0)
 
 /** Public OKX history candles as the fake client returns them: newest first, one page. */
 export function fakeHistoryClient(bars:number[][],omit:number[]=[],funding:Array<{fundingTime:number;realizedRate:string}>=[]):PublicClient {
- const rows=bars.map((p,i)=>[String(i*H),...p.map(String),'1','100','100','1']).filter((_,i)=>!omit.includes(i)).reverse();
+ // An optional fifth value per bar is its quote turnover (volCcy and volCcyQuote); default 100.
+ const rows=bars.map((p,i)=>[String(i*H),...p.slice(0,4).map(String),'1',String(p[4] ?? 100),String(p[4] ?? 100),'1']).filter((_,i)=>!omit.includes(i)).reverse();
  const fundingRows=[...funding].reverse().map(f=>({instId:'BTC-USDT-SWAP',instType:'SWAP',fundingTime:String(f.fundingTime),fundingRate:f.realizedRate,realizedRate:f.realizedRate}));
  const pages:Record<string,unknown[][]>={'/api/v5/market/history-candles':[rows,[]],'/api/v5/public/funding-rate-history':[fundingRows,[]]};
  return {site:'global',async get<T>(path:string,query:Record<string,string>){
