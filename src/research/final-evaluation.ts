@@ -4,10 +4,10 @@ import {DomainError} from '../lib/errors.ts';
 import {canonicalJson,sha256} from '../lib/hash.ts';
 import {inTransaction,type Db} from '../store/db.ts';
 import {stressAndBaselines} from './baselines.ts';
-import {loadRegisteredExperiment,replayWindow,type Registry} from './registered-replay.ts';
+import {loadRegisteredExperiment,replayWindow,selectionOf,type Registry} from './registered-replay.ts';
 import {parseReplayInput} from './research-evaluation.ts';
 import {assessSensitivity} from './sensitivity.ts';
-import {judgeExplorationAndValidation} from './validation-judgement.ts';
+import {judgeExplorationAndValidation,equityDrawdownAbove} from './validation-judgement.ts';
 
 const requestSchema=z.strictObject({experimentId:z.string(),version:z.number(),expected:z.unknown()});
 // Evidence the current history manifests cannot supply; while unknown, a report cannot be `passed`.
@@ -50,7 +50,7 @@ export function runFinalEvaluation(db:Db,registry:Registry,raw:unknown,now:()=>D
  const {registration,inspection}=loaded, {replay,gates}=registration;
  const base={schemaVersion:1 as const,experimentId:request.experimentId,version:request.version,registrationSha256:registration.contentSha256,history:{reference:inspection.reference,sha256:inspection.sha256},executionAuthorized:false as const};
  // The single run must judge the registered strategy; universe selection is not wired into this report.
- if(registration.universe || replay?.selection) return {...base,outcome:'blocked' as const,reasonCode:'universe_final_evaluation_unsupported' as const,validation:null,sensitivity:null,evaluation:null,gatesMet:false,status:'insufficient' as const,evidenceGaps:[],sampleNotes:[]};
+ if(registration.universe || selectionOf(replay)) return {...base,outcome:'blocked' as const,reasonCode:'universe_final_evaluation_unsupported' as const,validation:null,sensitivity:null,evaluation:null,gatesMet:false,status:'insufficient' as const,evidenceGaps:[],sampleNotes:[]};
  if(!replay || !gates?.sensitivity || !gates.costStressMultipliers || gates.costStressMustStayPositiveAt===undefined || gates.requireBeatHold===undefined)
   return {...base,outcome:'blocked' as const,reasonCode:'rules_incomplete' as const,validation:null,sensitivity:null,evaluation:null,gatesMet:false,status:'insufficient' as const,evidenceGaps:[],sampleNotes:[]};
  const validation=judgeExplorationAndValidation(loaded,gates);
@@ -65,6 +65,7 @@ export function runFinalEvaluation(db:Db,registry:Registry,raw:unknown,now:()=>D
   if(gates.requireBeatHold && robustness.hold && !new Decimal(net).gt(robustness.hold.netUsdt)) failed.push('evaluation_does_not_beat_hold');
   if(stressed!==null && !new Decimal(stressed).gt(0)) failed.push('evaluation_not_positive_under_cost_stress');
  }
+ if(equityDrawdownAbove(window,gates)) failed.push('evaluation_equity_drawdown_above_limit');
  const evaluationGate=insufficient.length ? 'insufficient' as const : failed.length ? 'failed' as const : 'met' as const;
  const gateStates=[validation.validationGate,sensitivity.sensitivityGate,evaluationGate];
  const gatesMet=gateStates.every(g=>g==='met');

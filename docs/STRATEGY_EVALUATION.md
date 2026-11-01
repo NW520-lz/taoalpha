@@ -91,3 +91,12 @@ CLI `research evaluation <experimentId> <version>` 和 MCP 工具 `taoalpha_rese
 协议 v1（用户 2026-11-01 确认）在第一条判断写入时冻结进数据库，内容包括：币种 BTC-USDT、ETH-USDT 现货；期限 7 天；打分用 UTC 日线效率比 ER = |C7−C0| / Σ|Ci−Ci−1|，ER ≥ 0.5 记为趋势（按方向分涨跌），ER ≤ 0.3 记为震荡，二者之间记为模糊，不计入命中率；`unclear` 视为弃权，单独报告覆盖率；每个币种至少 30 个已打分判断期；对照组为"总是猜震荡"、"沿用上一期实际结果"和"过去一年最常见的结果"。数据库里已保存的协议内容与代码不一致时，拒绝写入新的判断。
 
 入口：CLI `research regime-record --file <judgement.json>` 和 `research regime-list`，MCP 工具 `taoalpha_regime_record` 与只读的 `taoalpha_regime_list`。列表同时返回冻结协议、全部判断，以及第一期到最后一期之间每个币种漏记的判断期。打分报告属于工单 16，尚未实现。判断者身份为自报（`judgeVerified: false`），所有记录都是 `executable: false`。
+
+## 网格规则接入
+
+实验登记的 `replay` 可以是趋势规则（`rule.kind: breakout_atr_trailing`），也可以是[现货网格](GRID_CANDLE_REPLAY.md)（`rule.kind: grid_spot`）。`replayWindow` 按规则类型调用对应的回放程序，评价链的其余部分只使用两者共同的交易字段，因此验证判定、成本压力与持有对照、参数敏感性、多标的汇总和一次性最终评价对网格同样适用，趋势实验的结果不变。
+
+- 参数邻域：网格可登记 `gridCount`、`rangeFraction`、`stopFraction`；趋势可登记原有四个参数。登记时每个邻域键都必须是所登记规则的参数，`stopGrid` 只允许趋势规则使用。
+- 含持仓估值的回撤：网格窗口额外返回 `maxEquityDrawdownUsdt`（趋势为 `null`）。门槛 `maxEquityDrawdownUsdt` 只能和网格规则一起登记；探索、验证或最终评价窗口超过上限时，分别记为 `exploration_equity_drawdown_above_limit`、`validation_equity_drawdown_above_limit`、`evaluation_equity_drawdown_above_limit`。窗口内有数据缺口时，网格在每段重新开始，此值取各段的最大值，只是下限。多标的汇总逐个币种给出该值，不计算组合层面的合并权益曲线。
+- 持有对照沿用策略的每格数量，但网格最多可同时持有 `gridCount` 格，两者的资金占用不同，比较时要注意。
+- 网格在每个评价窗口内都以该窗口第一根 K 线的开盘价为中心重新开始，不把上一窗口的持仓带入下一窗口。

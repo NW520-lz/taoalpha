@@ -2,20 +2,21 @@ import {z} from 'zod';
 import {Decimal} from '../lib/decimal.ts';
 import type {Db} from '../store/db.ts';
 import type {EvaluationGates} from './gates.ts';
-import {loadRegisteredExperiment,replayWindow,type LoadedExperiment,type Registry,type TrendReplay} from './registered-replay.ts';
+import {loadRegisteredExperiment,replayWindow,type LoadedExperiment,type RegisteredReplay,type Registry} from './registered-replay.ts';
 import {parseReplayInput} from './research-evaluation.ts';
 
 const requestSchema=z.strictObject({experimentId:z.string(),version:z.number(),expected:z.unknown()});
 type Sensitivity=NonNullable<EvaluationGates['sensitivity']>;
 type Parameter=keyof Sensitivity['neighbourhoods'];
-const PARAMETERS:Parameter[]=['breakoutLookback','atrPeriod','initialStopAtr','trailingStopAtr'];
+const PARAMETERS:Parameter[]=['breakoutLookback','atrPeriod','initialStopAtr','trailingStopAtr','gridCount','rangeFraction','stopFraction'];
 
 /**
  * One-at-a-time neighbourhood replays plus the optional stop grid, on the exploration window only.
  * Every point is enumerated from the frozen registration, so the set of attempts cannot be cherry-picked.
  */
-export function assessSensitivity(loaded:LoadedExperiment,replay:TrendReplay,sensitivity:Sensitivity) {
- const net=(rule:Partial<TrendReplay['rule']>)=>replayWindow(loaded,'exploration',{...replay,rule:{...replay.rule,...rule}}).metrics?.netUsdt ?? null;
+export function assessSensitivity(loaded:LoadedExperiment,replay:RegisteredReplay,sensitivity:Sensitivity) {
+ // Neighbourhood keys are checked against the registered rule kind at registration.
+ const net=(rule:Record<string,number|string>)=>replayWindow(loaded,'exploration',{...replay,rule:{...replay.rule,...rule}} as RegisteredReplay).metrics?.netUsdt ?? null;
  const failed:string[]=[], insufficient:string[]=[];
  const parameters=PARAMETERS.filter(p=>sensitivity.neighbourhoods[p]).map(parameter=>{
   const points=(sensitivity.neighbourhoods[parameter] as Array<number|string>).map(value=>({value,netUsdt:net({[parameter]:value})}));

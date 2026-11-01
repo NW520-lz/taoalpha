@@ -37,7 +37,7 @@ test('the exploration window replays only its own candles with the registered pa
   const segment=result.segments[0]!;
   assert.deepEqual([segment.firstOpenMs,segment.lastCloseMs,segment.candles,segment.endsAt],[0,6*H,6,'window_end']);
   // Bars 6-8 belong to the validation window, so the bar-7 breakout must not appear here.
-  assert.deepEqual(segment.result.hypotheticalTrades.map(t=>[t.signalIndex,t.entryIndex,t.exitIndex,t.exitReason,t.netUsdt]),[[2,3,5,'stop','9.707']]);
+  assert.deepEqual(segment.result.hypotheticalTrades.map(t=>['signalIndex' in t ? t.signalIndex : null,t.entryIndex,t.exitIndex,t.exitReason,t.netUsdt]),[[2,3,5,'stop','9.707']]);
   assert.equal(result.status,'insufficient');assert.equal(result.executionAuthorized,false);
  }finally{db.close()}
 });

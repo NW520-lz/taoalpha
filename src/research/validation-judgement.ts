@@ -17,6 +17,11 @@ function normalizedNet(window:Window,days:number,resolutionMs:number):Decimal|nu
  return net==null ? null : new Decimal(net).times(days*DAY_MS).div(covered);
 }
 
+/** True when a registered equity drawdown limit is exceeded by the window's close-marked equity drawdown. */
+export function equityDrawdownAbove(window:Window,gates:EvaluationGates):boolean {
+ return gates.maxEquityDrawdownUsdt!==undefined && window.maxEquityDrawdownUsdt!==null && new Decimal(window.maxEquityDrawdownUsdt).gt(gates.maxEquityDrawdownUsdt);
+}
+
 /** Applies the frozen gates to exploration and validation. Never yields `passed`; that is the final report's job. */
 export function judgeExplorationAndValidation(loaded:LoadedExperiment,gates:EvaluationGates) {
  const exploration=replayWindow(loaded,'exploration'), validation=replayWindow(loaded,'validation');
@@ -32,6 +37,7 @@ export function judgeExplorationAndValidation(loaded:LoadedExperiment,gates:Eval
  if(explorationNet && !explorationNet.gt(0)) failed.push('exploration_net_not_positive');
  if(gates.requirePositiveNet && validationNet && !validationNet.gt(0)) failed.push('validation_net_not_positive');
  if(decay && decay.gt(gates.maxValidationDecay)) failed.push('validation_decay_above_limit');
+ for(const [name,window] of [['exploration',exploration],['validation',validation]] as const) if(equityDrawdownAbove(window,gates)) failed.push(`${name}_equity_drawdown_above_limit`);
  // Too little evidence outranks a failure: the sample cannot decide either way yet.
  const validationGate=insufficient.length ? 'insufficient' as const : failed.length ? 'failed' as const : 'met' as const;
  return {

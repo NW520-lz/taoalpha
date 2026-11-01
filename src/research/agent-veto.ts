@@ -3,7 +3,7 @@ import {Decimal} from '../lib/decimal.ts';
 import {DomainError} from '../lib/errors.ts';
 import {getBundle} from '../store/evidence-store.ts';
 import type {Db} from '../store/db.ts';
-import {loadRegisteredExperiment,type Registry} from './registered-replay.ts';
+import {loadRegisteredExperiment,selectionOf,type Registry} from './registered-replay.ts';
 import {simulateRelativeStrength,vetoKey} from './relative-strength.ts';
 import {parseReplayInput} from './research-evaluation.ts';
 import {getRun,type ResearchRunView} from './research-service.ts';
@@ -30,7 +30,7 @@ export function compareAgentVeto(db:Db,registry:Registry,raw:unknown) {
  const {registration,resolutionMs}=loaded;
  const unknowns=['agent_call_cost_unrecorded','agent_reports_not_statistically_independent','host_agent_execution_unverified'];
  const base={experimentId:request.experimentId,version:request.version,window:request.window,registrationSha256:registration.contentSha256,status:'insufficient' as const,executionAuthorized:false as const,unknowns};
- if(!registration.agentVetoes || !registration.replay?.selection || !registration.universe) return {...base,outcome:'blocked' as const,reasonCode:'rules_incomplete' as const,appliedVetoes:[],rejectedVetoes:null,researchRuns:null,rulesOnly:null,withVeto:null,netDifferenceUsdt:null};
+ if(!registration.agentVetoes || !selectionOf(registration.replay) || !registration.universe) return {...base,outcome:'blocked' as const,reasonCode:'rules_incomplete' as const,appliedVetoes:[],rejectedVetoes:null,researchRuns:null,rulesOnly:null,withVeto:null,netDifferenceUsdt:null};
  const runs=new Map<string,ResearchRunView>();
  const applied:typeof registration.agentVetoes=[], rejected:Array<typeof registration.agentVetoes[number] & {reason:Rejection}>=[];
  for(const veto of registration.agentVetoes) {

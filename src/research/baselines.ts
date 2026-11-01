@@ -3,7 +3,7 @@ import {Decimal} from '../lib/decimal.ts';
 import {DomainError} from '../lib/errors.ts';
 import type {Db} from '../store/db.ts';
 import {fundingCost,tradeCosts} from './trend-replay.ts';
-import {fundingEventsFor,loadRegisteredExperiment,replayWindow,windowCandles,type LoadedExperiment,type Registry,type TrendReplay,type WindowName} from './registered-replay.ts';
+import {fundingEventsFor,loadRegisteredExperiment,replayWindow,windowCandles,type LoadedExperiment,type RegisteredReplay,type Registry,type WindowName} from './registered-replay.ts';
 import {parseReplayInput} from './research-evaluation.ts';
 
 const requestSchema=z.strictObject({experimentId:z.string(),version:z.number(),expected:z.unknown(),window:z.enum(['exploration','validation','evaluation'])});
@@ -12,7 +12,7 @@ const requestSchema=z.strictObject({experimentId:z.string(),version:z.number(),e
  * Buy the window's first open, sell its last close, same quantity and cost model as the strategy.
  * Drawdown is on close-to-close gross marks from zero; gaps are held through.
  */
-function holdBaseline(loaded:LoadedExperiment,name:WindowName,replay:TrendReplay) {
+function holdBaseline(loaded:LoadedExperiment,name:WindowName,replay:RegisteredReplay) {
  const {candles}=windowCandles(loaded,name);
  if(!candles.length) return null;
  const qty=new Decimal(replay.market.baseQuantity), entry=new Decimal(candles[0]!.open), exit=new Decimal(candles.at(-1)!.close);
@@ -24,8 +24,8 @@ function holdBaseline(loaded:LoadedExperiment,name:WindowName,replay:TrendReplay
 }
 
 /** The strategy at each multiplier of its registered costs, beside hold and no-trade on the same window. */
-export function stressAndBaselines(loaded:LoadedExperiment,name:WindowName,replay:TrendReplay,multipliers:number[]) {
- const scaled=(m:number):TrendReplay=>({...replay,cost:{...replay.cost,entryFeePpm:replay.cost.entryFeePpm*m,exitFeePpm:replay.cost.exitFeePpm*m,entryImpactPpm:replay.cost.entryImpactPpm*m,exitImpactPpm:replay.cost.exitImpactPpm*m}});
+export function stressAndBaselines(loaded:LoadedExperiment,name:WindowName,replay:RegisteredReplay,multipliers:number[]) {
+ const scaled=(m:number):RegisteredReplay=>({...replay,cost:{...replay.cost,entryFeePpm:replay.cost.entryFeePpm*m,exitFeePpm:replay.cost.exitFeePpm*m,entryImpactPpm:replay.cost.entryImpactPpm*m,exitImpactPpm:replay.cost.exitImpactPpm*m}}) as RegisteredReplay;
  return {
   costStress:multipliers.map(multiplier=>({multiplier,metrics:replayWindow(loaded,name,scaled(multiplier)).metrics})),
   hold:holdBaseline(loaded,name,replay),

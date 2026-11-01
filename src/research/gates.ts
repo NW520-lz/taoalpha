@@ -18,7 +18,9 @@ export const evaluationGatesSchema=z.strictObject({
  // Cost stress: fees and impact are each multiplied; must include 1 to show the base case.
  // Parameter sensitivity, run on the exploration window only.
  sensitivity:z.strictObject({
-  neighbourhoods:z.strictObject({breakoutLookback:intValues(2).optional(),atrPeriod:intValues(2).optional(),initialStopAtr:decimalValues(2).optional(),trailingStopAtr:decimalValues(2).optional()}).refine(n=>Object.keys(n).length>0),
+  // Trend keys, then grid keys; each must name a parameter of the registered rule kind.
+  neighbourhoods:z.strictObject({breakoutLookback:intValues(2).optional(),atrPeriod:intValues(2).optional(),initialStopAtr:decimalValues(2).optional(),trailingStopAtr:decimalValues(2).optional(),
+   gridCount:intValues(2).optional(),rangeFraction:decimalValues(2).optional(),stopFraction:decimalValues(2).optional()}).refine(n=>Object.keys(n).length>0),
   stopGrid:z.strictObject({initialStopAtr:decimalValues(1),trailingStopAtr:decimalValues(1)}).optional(),
   maxAdjacentChange:nonNegativeDecimal,
   requireAllPositive:z.boolean(),
@@ -26,6 +28,8 @@ export const evaluationGatesSchema=z.strictObject({
  costStressMultipliers:z.array(z.number().int().min(1).max(1000)).min(1).max(10).refine(m=>m[0]===1 && m.every((v,i)=>i===0 || v>m[i-1]!)).optional(),
  // Universe judgement: share of instrument groups with positive net, and positive registered regimes.
  multiInstrument:z.strictObject({minPositiveGroupShare:nonNegativeDecimal.refine(v=>dec(v).lte(1)),minPositiveRegimes:z.number().int().min(0).max(20)}).optional(),
+ // Close-marked equity drawdown including open inventory, for engines that report it (grid).
+ maxEquityDrawdownUsdt:positiveDecimal.optional(),
  // Final evaluation window: net must stay positive at this registered multiplier, and optionally beat holding.
  costStressMustStayPositiveAt:z.number().int().min(1).max(1000).optional(),
  requireBeatHold:z.boolean().optional(),

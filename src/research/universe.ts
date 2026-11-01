@@ -16,7 +16,7 @@ export function replayUniverse(db:Db,loaded:LoadedExperiment,name:WindowName) {
  return registration.universe!.instruments.map(({group,data})=>{
   const inspection=inspectBoundHistory(db,registration,data);
   const window=replayWindow({...loaded,inspection,manifest:getHistory(db,inspection.reference)!},name);
-  return {instId:data.scope.instId,group,metrics:window.metrics,trades:window.outcome==='replayed' ? timedTrades(window.segments,resolutionMs) : []};
+  return {instId:data.scope.instId,group,metrics:window.metrics,maxEquityDrawdownUsdt:window.maxEquityDrawdownUsdt,trades:window.outcome==='replayed' ? timedTrades(window.segments,resolutionMs) : []};
  });
 }
 
@@ -35,7 +35,8 @@ export function judgeUniverse(members:ReturnType<typeof replayUniverse>,regimes:
  if(new Decimal(groups.filter(g=>positive(g.metrics)).length).div(groups.length).lt(rule.minPositiveGroupShare)) failed.push('positive_group_share_below_minimum');
  if(byRegime.filter(r=>positive(r.metrics)).length<rule.minPositiveRegimes) failed.push('positive_regimes_below_minimum');
  const universeGate=insufficient.length ? 'insufficient' as const : failed.length ? 'failed' as const : 'met' as const;
- return {instruments:members.map(({instId,group,metrics})=>({instId,group,metrics})),total,groups,regimes:byRegime,universeGate,reasons:[...failed,...insufficient]};
+ // Per-instrument equity drawdowns only; a combined portfolio equity curve is not computed.
+ return {instruments:members.map(({instId,group,metrics,maxEquityDrawdownUsdt})=>({instId,group,metrics,maxEquityDrawdownUsdt})),total,groups,regimes:byRegime,universeGate,reasons:[...failed,...insufficient]};
 }
 
 /** Read-only multi-instrument view of an exploration or validation window. */

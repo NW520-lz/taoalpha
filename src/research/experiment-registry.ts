@@ -6,6 +6,7 @@ import { getRow, inTransaction, type Db } from '../store/db.ts';
 import { dec } from '../lib/decimal.ts';
 import { evaluationGatesSchema } from './gates.ts';
 import { fundingMatchesProduct, trendReplayConfigSchema } from './trend-replay.ts';
+import { gridReplayConfigSchema } from './grid-replay.ts';
 
 const reference=z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/);
 const text=z.string().min(1).max(2000).refine(v=>v.trim()===v && v.length>0);
@@ -28,7 +29,7 @@ const schema=z.strictObject({experimentId:reference,version,attemptId:reference,
  costs:z.strictObject({fees:text,spread:text,slippage:text,funding:text,execution:text}),
  windows:z.strictObject({exploration:window,validation:window,evaluation:window}),
  evaluation:z.strictObject({metrics:text,thresholds:text,baseline:text,method:text}),
- replay:trendReplayConfigSchema.optional(),
+ replay:z.union([trendReplayConfigSchema,gridReplayConfigSchema]).optional(),
  gates:evaluationGatesSchema.optional(),
  universe:universeSchema.optional(),
  // Agent vetoes of specific candidate signals, each tied to the research run that produced it.
@@ -36,17 +37,20 @@ const schema=z.strictObject({experimentId:reference,version,attemptId:reference,
 }).refine(v=>{const {exploration:a,validation:b,evaluation:c}=v.windows; const t=[a.start,a.end,b.start,b.end,c.start,c.end].map(Date.parse); return t.every(Number.isFinite) && t[0]!<t[1]! && t[1]!<=t[2]! && t[2]!<t[3]! && t[3]!<=t[4]! && t[4]!<t[5]!})
  .refine(v=>v.replay===undefined || (v.data.scope?.product===v.replay.market.product && fundingMatchesProduct(v.replay)))
  .refine(v=>v.gates===undefined || v.replay!==undefined)
- .refine(v=>!v.replay?.selection || v.universe!==undefined)
+ .refine(v=>!(v.replay && 'selection' in v.replay && v.replay.selection) || v.universe!==undefined)
  // A required count of positive regimes needs that many registered regimes.
  .refine(v=>!v.gates?.multiInstrument || (v.universe?.regimes?.length ?? 0)>=v.gates.multiInstrument.minPositiveRegimes)
- .refine(v=>!v.agentVetoes || (v.replay?.selection!==undefined && new Set(v.agentVetoes.map(x=>`${x.instId}@${x.signalOpenMs}`)).size===v.agentVetoes.length))
+ .refine(v=>!v.agentVetoes || (v.replay!==undefined && 'selection' in v.replay && v.replay.selection!==undefined && new Set(v.agentVetoes.map(x=>`${x.instId}@${x.signalOpenMs}`)).size===v.agentVetoes.length))
  // Universe members differ only by instrument, and regimes are ordered, non-overlapping periods.
  .refine(v=>!v.universe || (v.replay!==undefined && v.data.scope!==undefined
   && new Set(v.universe.instruments.map(i=>i.data.scope.instId)).size===v.universe.instruments.length
   && v.universe.instruments.every(i=>i.data.scope.site===v.data.scope!.site && i.data.scope.product===v.data.scope!.product && i.data.scope.resolution===v.data.scope!.resolution)
   && (v.universe.regimes ?? []).every((r,k,all)=>Date.parse(r.start)<Date.parse(r.end) && (k===0 || Date.parse(all[k-1]!.end)<=Date.parse(r.start)))))
  // Every sensitivity neighbourhood is centred on the registered parameter value.
- .refine(v=>!v.gates?.sensitivity || !v.replay || Object.entries(v.gates.sensitivity.neighbourhoods).every(([key,values])=>{const registered=v.replay!.rule[key as 'atrPeriod'];return (values as Array<number|string>).some(x=>typeof x==='number' ? x===registered : dec(x).eq(String(registered)));}))
+ .refine(v=>!v.gates?.sensitivity || !v.replay || Object.entries(v.gates.sensitivity.neighbourhoods).every(([key,values])=>{const registered=(v.replay!.rule as Record<string,unknown>)[key];return (values as Array<number|string>).some(x=>typeof x==='number' ? x===registered : dec(x).eq(String(registered)));}))
+ // The trend stop grid and the equity drawdown limit each belong to one rule kind.
+ .refine(v=>!v.gates?.sensitivity?.stopGrid || v.replay?.rule.kind==='breakout_atr_trailing')
+ .refine(v=>v.gates?.maxEquityDrawdownUsdt===undefined || v.replay?.rule.kind==='grid_spot')
  // Stressed costs must stay a valid share of notional (at most 100% per side).
  .refine(v=>!v.gates?.costStressMultipliers || !v.replay || Math.max(...Object.values(v.replay.cost).filter((c):c is number=>typeof c==='number'))*Math.max(...v.gates.costStressMultipliers)<=1000000);
 type Input=z.infer<typeof schema>;

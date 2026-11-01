@@ -4,7 +4,7 @@ import {DomainError} from '../lib/errors.ts';
 import {getHistory} from '../market/history.ts';
 import type {Db} from '../store/db.ts';
 import {inspectBoundHistory} from './experiment-history.ts';
-import {fundingEventsFor,loadRegisteredExperiment,tradeMetrics,windowCandles,type LoadedExperiment,type Registry,type WindowName} from './registered-replay.ts';
+import {fundingEventsFor,isGridReplay,loadRegisteredExperiment,tradeMetrics,windowCandles,type LoadedExperiment,type Registry,type WindowName} from './registered-replay.ts';
 import {parseReplayInput} from './research-evaluation.ts';
 import {atr,checkStop,fundingCost,tradeCosts,type Bar,type ExitReason} from './trend-replay.ts';
 
@@ -29,7 +29,7 @@ export function replayRelativeStrength(db:Db,registry:Registry,raw:unknown) {
 
 /** The universe replay with the given candidate signals vetoed (skipped as `agent_veto` before ranking). */
 export function simulateRelativeStrength(db:Db,loaded:LoadedExperiment,name:WindowName,vetoed:Set<string>) {
- const {registration,resolutionMs,request}=loaded, replay=registration.replay, selection=replay?.selection;
+ const {registration,resolutionMs,request}=loaded, replay=registration.replay && !isGridReplay(registration.replay) ? registration.replay : undefined, selection=replay?.selection;
  const base={experimentId:request.experimentId,version:request.version,window:name,registrationSha256:registration.contentSha256,survivorshipGap:loaded.inspection.unknowns.includes('historical_universe_unknown'),status:'insufficient' as const,executionAuthorized:false as const};
  const blocked=(reasonCode:'rules_incomplete'|'missing_required_evidence')=>({...base,outcome:'blocked' as const,reasonCode,trades:null,skips:[],metrics:null});
  if(!replay || !selection || !registration.universe) return blocked('rules_incomplete');

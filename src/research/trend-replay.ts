@@ -18,7 +18,7 @@ export const trendReplayConfigSchema=z.object({market:z.object({product:z.enum([
  selection:z.object({strengthLookback:window,volumeLookback:window,volumeMultiplier:positive,maxPositions:z.number().int().min(1).max(50)}).strict().optional()}).strict();
 export type TrendReplayConfig=z.infer<typeof trendReplayConfigSchema>;
 /** Spot has no funding; a perpetual long settles realized public funding events. */
-export const fundingMatchesProduct=(c:TrendReplayConfig)=>(c.market.product==='spot')===(c.cost.funding==='not_applicable');
+export const fundingMatchesProduct=(c:{market:{product:string};cost:{funding:string}})=>(c.market.product==='spot')===(c.cost.funding==='not_applicable');
 const fundingEvent=z.object({fundingTime:timestamp,realizedRate:z.string().max(32).refine(isDecimalString)}).strict();
 const schema=trendReplayConfigSchema.extend({schemaVersion:z.literal(1),resolutionMs:z.number().int().min(1).max(86400000),candles:z.array(replayCandle).min(1).max(100000),fundingEvents:z.array(fundingEvent).max(100000).optional()}).strict()
  .refine(v=>fundingMatchesProduct(v) && (v.fundingEvents!==undefined)===(v.market.product==='usdt_perpetual'));
