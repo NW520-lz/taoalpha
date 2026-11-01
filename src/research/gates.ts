@@ -24,5 +24,8 @@ export const evaluationGatesSchema=z.strictObject({
   requireAllPositive:z.boolean(),
  }).optional(),
  costStressMultipliers:z.array(z.number().int().min(1).max(1000)).min(1).max(10).refine(m=>m[0]===1 && m.every((v,i)=>i===0 || v>m[i-1]!)).optional(),
-});
+ // Final evaluation window: net must stay positive at this registered multiplier, and optionally beat holding.
+ costStressMustStayPositiveAt:z.number().int().min(1).max(1000).optional(),
+ requireBeatHold:z.boolean().optional(),
+}).refine(g=>g.costStressMustStayPositiveAt===undefined || (g.costStressMultipliers ?? []).includes(g.costStressMustStayPositiveAt));
 export type EvaluationGates=z.infer<typeof evaluationGatesSchema>;
