@@ -86,3 +86,9 @@ test('out-of-window candle at end is excluded before closedness check', async ()
 test('reading history from new db safely initializes and returns null', () => {
  const db=openDb(':memory:'); assert.equal(getHistory(db,'history_missing'),null); db.close();
 });
+
+test('page bounds allow multi-year intraday history up to the 100,000-interval window limit', async () => {
+ const client=fake({'/api/v5/market/history-candles':[[row(60000),row(0)],[]]});
+ await collectHistory(client,{...options,maxPages:1000});
+ await assert.rejects(()=>collectHistory(client,{...options,maxPages:1001}),/pagination bounds/);
+});

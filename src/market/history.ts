@@ -22,7 +22,7 @@ function validate(o:HistoryOptions):void {
  if (!o || !/^[A-Z0-9]+-USDT(?:-SWAP)?$/.test(o.instId) || (o.product !== 'spot' && o.product !== 'usdt_perpetual') || (o.product === 'spot' ? o.instId.endsWith('-SWAP') : !o.instId.endsWith('-SWAP'))) throw Error('invalid instrument or product');
  if (!Object.hasOwn(BARS,o.resolution)) throw Error('invalid resolution');
  if (![o.start,o.end,o.asOf].every(validTime) || o.end<=o.start || o.end>Number.MAX_SAFE_INTEGER-1 || o.start % BARS[o.resolution] || o.end % BARS[o.resolution] || (o.end-o.start)/BARS[o.resolution]>100000) throw Error('invalid window');
- if (!Number.isInteger(o.limit)||o.limit<1||o.limit>100||!Number.isInteger(o.maxPages)||o.maxPages<1||o.maxPages>100) throw Error('invalid pagination bounds');
+ if (!Number.isInteger(o.limit)||o.limit<1||o.limit>100||!Number.isInteger(o.maxPages)||o.maxPages<1||o.maxPages>1000) throw Error('invalid pagination bounds');
  if (typeof o.capturedAt!=='string'||!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/.test(o.capturedAt)||!Number.isFinite(Date.parse(o.capturedAt)) || new Date(o.capturedAt).toISOString()!==o.capturedAt || Date.parse(o.capturedAt)<o.asOf) throw Error('invalid capturedAt');
  for(const s of [o.attemptId,o.predecessorRef,o.experimentRef]) if(s!==undefined && (typeof s!=='string'||!/^[A-Za-z0-9_.:-]{1,128}$/.test(s))) throw Error('invalid reference');
 }
