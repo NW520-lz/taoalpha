@@ -49,3 +49,11 @@
 整体 `status`：任一判定失败为 `failed`；三项全部达标（`gatesMet: true`）且没有证据缺口才是 `passed`。当前历史清单始终缺少历史可获知时间和历史标的池（`evidenceGaps`），因此 `passed` 暂时不可达，即使全部达标也只能是 `insufficient`。`passed` 只表示历史回放范围，不代表模拟或实盘准入；报告注明交易不是独立样本。
 
 报告以规范 JSON 和 SHA-256 保存到 `final_evaluation_reports`，每个实验版本一行，更新和删除由触发器禁止。再次调用（包括不同时钟）返回已保存的同一份报告；并发时先写入者的报告胜出。读取时校验哈希。报告内容来自本地登记与清单，不代表事前登记已被可信时间戳证明。
+
+## 多标的汇总
+
+实验登记的可选 `universe`（需同时登记 `replay` 和带范围的 `data`）冻结至少两个成员，每个成员是一个分组标签和一份带自身范围的历史清单引用。所有成员的站点、产品和周期必须与主数据范围一致，标的不能重复；可选的 `regimes` 是按时间排列、互不重叠的行情阶段。`gates.multiInstrument` 冻结正收益分组的最低占比 `minPositiveGroupShare`（0 到 1）和最少正收益阶段数 `minPositiveRegimes`。
+
+`aggregateUniverse(db, registry, {experimentId, version, expected, window})` 对探索或验证窗口逐个核对成员清单（与主数据相同的范围、哈希、来源与窗口覆盖检查），用同一组登记参数回放，然后把所有已实现交易按出场时间合并为一条时间线，给出总体、每个分组和每个阶段（按入场时间归属）的指标。判定 `universeGate`：成员缺数据或总交易数少于 `minRealizedTrades` 为 `insufficient`；正收益分组占比低于下限或正收益阶段数不足为 `failed`。
+
+只要历史标的池未知，结果就标 `survivorshipGap: true`：清单只来自登记时仍可查询的标的，退市标的缺席会使多品种结果偏乐观。各标的高度相关，分组为正不等于独立证据。多标的的最终评价窗口尚未接入一次性报告。

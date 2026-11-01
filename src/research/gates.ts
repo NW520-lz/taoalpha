@@ -24,6 +24,8 @@ export const evaluationGatesSchema=z.strictObject({
   requireAllPositive:z.boolean(),
  }).optional(),
  costStressMultipliers:z.array(z.number().int().min(1).max(1000)).min(1).max(10).refine(m=>m[0]===1 && m.every((v,i)=>i===0 || v>m[i-1]!)).optional(),
+ // Universe judgement: share of instrument groups with positive net, and positive registered regimes.
+ multiInstrument:z.strictObject({minPositiveGroupShare:nonNegativeDecimal.refine(v=>dec(v).lte(1)),minPositiveRegimes:z.number().int().min(0).max(20)}).optional(),
  // Final evaluation window: net must stay positive at this registered multiplier, and optionally beat holding.
  costStressMustStayPositiveAt:z.number().int().min(1).max(1000).optional(),
  requireBeatHold:z.boolean().optional(),

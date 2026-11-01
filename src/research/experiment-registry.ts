@@ -15,6 +15,12 @@ const source=z.strictObject({reference,sha256:hash,version:reference});
 export const historyScopeSchema=z.strictObject({site:z.enum(['global','eea','us','tr']),instId:z.string().regex(/^[A-Z0-9]+-USDT(?:-SWAP)?$/),product:z.enum(['spot','usdt_perpetual']),resolution:z.enum(['1m','5m','15m','1H','4H','1Dutc'])})
  .refine(v=>v.product==='spot'?!v.instId.endsWith('-SWAP'):v.instId.endsWith('-SWAP'));
 const dataSource=source.extend({scope:historyScopeSchema.optional()});
+// A multi-instrument universe: every member is a frozen manifest reference with its own scope.
+const label=z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$/);
+const universeSchema=z.strictObject({
+ instruments:z.array(z.strictObject({group:label,data:source.extend({scope:historyScopeSchema})})).min(2).max(200),
+ regimes:z.array(z.strictObject({label,start:z.iso.datetime({offset:true}),end:z.iso.datetime({offset:true})})).min(1).max(20).optional(),
+});
 const window=z.strictObject({start:z.iso.datetime({offset:true}),end:z.iso.datetime({offset:true})});
 const schema=z.strictObject({experimentId:reference,version,attemptId:reference,
  strategy:z.strictObject({id:reference,version,entryRules:text,exitRules:text,invalidationRules:text}),
@@ -23,10 +29,16 @@ const schema=z.strictObject({experimentId:reference,version,attemptId:reference,
  windows:z.strictObject({exploration:window,validation:window,evaluation:window}),
  evaluation:z.strictObject({metrics:text,thresholds:text,baseline:text,method:text}),
  replay:trendReplayConfigSchema.optional(),
- gates:evaluationGatesSchema.optional()
+ gates:evaluationGatesSchema.optional(),
+ universe:universeSchema.optional()
 }).refine(v=>{const {exploration:a,validation:b,evaluation:c}=v.windows; const t=[a.start,a.end,b.start,b.end,c.start,c.end].map(Date.parse); return t.every(Number.isFinite) && t[0]!<t[1]! && t[1]!<=t[2]! && t[2]!<t[3]! && t[3]!<=t[4]! && t[4]!<t[5]!})
  .refine(v=>v.replay===undefined || (v.data.scope?.product===v.replay.market.product && fundingMatchesProduct(v.replay)))
  .refine(v=>v.gates===undefined || v.replay!==undefined)
+ // Universe members differ only by instrument, and regimes are ordered, non-overlapping periods.
+ .refine(v=>!v.universe || (v.replay!==undefined && v.data.scope!==undefined
+  && new Set(v.universe.instruments.map(i=>i.data.scope.instId)).size===v.universe.instruments.length
+  && v.universe.instruments.every(i=>i.data.scope.site===v.data.scope!.site && i.data.scope.product===v.data.scope!.product && i.data.scope.resolution===v.data.scope!.resolution)
+  && (v.universe.regimes ?? []).every((r,k,all)=>Date.parse(r.start)<Date.parse(r.end) && (k===0 || Date.parse(all[k-1]!.end)<=Date.parse(r.start)))))
  // Stressed costs must stay a valid share of notional (at most 100% per side).
  // Every sensitivity neighbourhood is centred on the registered parameter value.
  .refine(v=>!v.gates?.sensitivity || !v.replay || Object.entries(v.gates.sensitivity.neighbourhoods).every(([key,values])=>{const registered=v.replay!.rule[key as 'atrPeriod'];return (values as Array<number|string>).some(x=>typeof x==='number' ? x===registered : dec(x).eq(String(registered)));}))
@@ -66,7 +78,7 @@ export function createExperimentRegistry(db:Db,now:()=>Date) {
  function parseStoredRow(row:Row):ExperimentRegistration {
   const parsed=JSON.parse(row.content) as ExperimentRegistration;
   const {contentSha256,...body}=parsed;
-  if(canonicalJson(parsed)!==row.content || contentSha256!==row.content_sha256 || sha256(canonicalJson(body))!==contentSha256 || parsed.experimentId!==row.experiment_id || parsed.version!==row.version || parsed.attemptId!==row.attempt_id || parsed.status!=='unvalidated' || parsed.dataAvailability!=='unverified' || parsed.executionAuthorized!==false || !((parsed.schemaVersion===1 && parsed.data?.scope===undefined && parsed.replay===undefined && parsed.gates===undefined)||(parsed.schemaVersion===2 && parsed.data?.scope!==undefined && parsed.replay===undefined && parsed.gates===undefined)||(parsed.schemaVersion===3 && parsed.data?.scope!==undefined && parsed.replay!==undefined))) fail();
+  if(canonicalJson(parsed)!==row.content || contentSha256!==row.content_sha256 || sha256(canonicalJson(body))!==contentSha256 || parsed.experimentId!==row.experiment_id || parsed.version!==row.version || parsed.attemptId!==row.attempt_id || parsed.status!=='unvalidated' || parsed.dataAvailability!=='unverified' || parsed.executionAuthorized!==false || !((parsed.schemaVersion===1 && parsed.data?.scope===undefined && parsed.replay===undefined && parsed.gates===undefined && parsed.universe===undefined)||(parsed.schemaVersion===2 && parsed.data?.scope!==undefined && parsed.replay===undefined && parsed.gates===undefined && parsed.universe===undefined)||(parsed.schemaVersion===3 && parsed.data?.scope!==undefined && parsed.replay!==undefined))) fail();
   const {schemaVersion,registeredAt,status,dataAvailability,executionAuthorized,...input}=body;
   const strategy=getRow<{content:string}>(db,'SELECT content FROM experiment_strategy_versions WHERE strategy_id=? AND version=?',input.strategy.id,input.strategy.version);
   if(!schema.safeParse(input).success || !Number.isFinite(Date.parse(registeredAt)) || !strategy || strategy.content!==canonicalJson(input.strategy)) fail();

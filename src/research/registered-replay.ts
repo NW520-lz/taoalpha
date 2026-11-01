@@ -14,7 +14,14 @@ export const fundingEventsFor=(loaded:LoadedExperiment,replay:TrendReplay)=>repl
 // Scope and identifiers are validated by inspectExperimentHistory; this only fixes the request shape.
 const requestSchema=z.strictObject({experimentId:z.string(),version:z.number(),expected:z.unknown(),window:z.enum(['exploration','validation','evaluation'])});
 export type Registry=Pick<ReturnType<typeof createExperimentRegistry>,'get'>;
-type Segment={endsAt:'window_end'|'data_gap';result:ReturnType<typeof replayTrendCandles>};
+type Segment={firstOpenMs:number;endsAt:'window_end'|'data_gap';result:ReturnType<typeof replayTrendCandles>};
+export type TimedTrade=ReturnType<typeof timedTrades>[number];
+
+/** Trades of replayed segments with absolute entry/exit bar open times, ordered by exit. */
+export function timedTrades(segments:Segment[],resolutionMs:number) {
+ return segments.flatMap(s=>s.result.hypotheticalTrades.map(t=>({...t,endsAt:s.endsAt,entryOpenMs:s.firstOpenMs+t.entryIndex*resolutionMs,exitOpenMs:s.firstOpenMs+t.exitIndex*resolutionMs})))
+  .sort((a,b)=>a.exitOpenMs-b.exitOpenMs);
+}
 
 // Ratios and averages may not terminate; they are rounded half-even to 10 decimal places.
 const ratio=(a:Decimal,b:Decimal)=>a.div(b).toDecimalPlaces(10,Decimal.ROUND_HALF_EVEN).toFixed();
@@ -25,8 +32,7 @@ const total=(list:Decimal[])=>list.reduce((a,b)=>a.plus(b),new Decimal(0));
  * segment ends is only a close-price mark: at the window end it is reported separately, at a data
  * gap its outcome is unknown and it is only counted. Without realized exits amounts are null, not zero.
  */
-function windowMetrics(segments:Segment[]) {
- const all=segments.flatMap(s=>s.result.hypotheticalTrades.map(t=>({...t,endsAt:s.endsAt})));
+export function tradeMetrics(all:TimedTrade[]) {
  const trades=all.filter(t=>t.exitReason!=='end_of_data');
  const marked=all.filter(t=>t.exitReason==='end_of_data' && t.endsAt==='window_end');
  const sum=(pick:(t:typeof trades[number])=>string)=>total(trades.map(t=>new Decimal(pick(t))));
@@ -92,7 +98,7 @@ export function replayWindow(loaded:LoadedExperiment,name:WindowName,replay:Tren
   const openAtGap=endsAt==='data_gap' && result.hypotheticalTrades.at(-1)?.exitReason==='end_of_data';
   return {firstOpenMs:candles[0]!.ts,lastCloseMs:candles.at(-1)!.closeTime,candles:candles.length,startsAt,endsAt,openAtGap,result};
  });
- return {...base,outcome:'replayed' as const,reasonCode:null,segments,metrics:windowMetrics(segments)};
+ return {...base,outcome:'replayed' as const,reasonCode:null,segments,metrics:tradeMetrics(timedTrades(segments,resolutionMs))};
 }
 
 /**
