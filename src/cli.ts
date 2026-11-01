@@ -1,3 +1,4 @@
+import { getFinalEvaluation } from "./research/final-evaluation.ts";
 import { createMethodRecord, getMethodRecord, getMethodContext, type MethodContextInput } from "./research/method-record.ts";
 import { readFileSync } from "node:fs";
 import { parseArgs } from "node:util";
@@ -45,7 +46,8 @@ const USAGE =
   "用法：status | scan [--strategy <path>] | bundle <bundleId> [--top <n>] | evidence <evidenceId> | " +
   "research start --bundle <id> --agent-mode <parallel_independent|serial_degraded> | research tasks <runId> | " +
   "research submit <assignmentId> (--file <report.json> | --failed <reason>) | research get <runId> | " +
-  "research method-context <runId> | research method-create --file <record.json> | research method-get <recordId> | research conflicts <runId>";
+  "research method-context <runId> | research method-create --file <record.json> | research method-get <recordId> | research conflicts <runId> | " +
+  "research evaluation <experimentId> <version>";
 
 const STATUS_ZH: Record<ResearchRunView["status"], string> = {
   independent_research: "独立研究",
@@ -166,6 +168,15 @@ async function research(args: string[], deps: CliDeps): Promise<Output> {
       const file = stringOption(values, "method-file");
       const view = startResearch(deps.db, { bundleId, agentMode: agentMode as AgentMode, ...(file ? {methodContext: readJson(file) as MethodContextInput} : {}) }, deps.now);
       return { value: view, summaryZh: runSummary(view) };
+    }
+    case "evaluation": {
+      // Read-only: a missing report is reported, never produced here.
+      const { positionals } = parse(rest, {});
+      const version = /^[1-9]d{0,14}$/.test(positionals[1] ?? "") ? Number(positionals[1]) : undefined;
+      if (positionals.length !== 2 || !positionals[0] || version === undefined) throw usageError("research evaluation requires <experimentId> <version>");
+      const report = getFinalEvaluation(deps.db, positionals[0], version);
+      return { value: { experimentId: positionals[0], version, state: report ? "evaluated" : "no_report", report },
+        summaryZh: report ? `最终评价报告：${report.status}；仅历史回放范围，不构成模拟或实盘准入。` : "该实验版本没有最终评价报告（未登记或尚未评价）；本命令不会运行评价。" };
     }
     case "conflicts": {
       const {positionals}=parse(rest,{}); if(positionals.length!==1 || !positionals[0]) throw usageError("research conflicts requires a run id");

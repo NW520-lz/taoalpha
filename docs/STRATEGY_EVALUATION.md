@@ -69,3 +69,7 @@
 3. 强度 = 标的在回看期的收益倍数 − 基准同期收益倍数，不为正的记为 `not_stronger_than_benchmark`；其余按强度从高到低（同强度按标的名）填补空余仓位，满额后的记为 `max_positions`，下一根无 K 线的记为 `no_entry_candle`。入场在下一根开盘。
 
 窗口结束仍持有的仓位是收盘标记。输出包含每笔交易（标的、信号/入场/出场时间、出场原因、成本与资金费）、全部跳过记录和按出场时间排序的指标，并保留幸存偏差标记。选币参数尚未纳入参数敏感性扫描，多标的最终评价窗口也未接入一次性报告。
+
+## 只读查看入口
+
+CLI `research evaluation <experimentId> <version>` 和 MCP 工具 `taoalpha_research_evaluation`（只读标注）通过同一业务逻辑读取已保存的最终评价报告。有报告时 `state: evaluated` 并返回完整报告；没有时 `state: no_report`、`report: null`，表示该实验版本未登记或尚未评价。入口绝不运行评价、不打开最终评价窗口、不产生交易所写请求。最终评价本身仍只能通过内部的 `runFinalEvaluation` 运行。

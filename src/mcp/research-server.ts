@@ -104,6 +104,10 @@ export function createResearchMcpServer(deps: CliDeps): McpServer {
   add("taoalpha_research_get", "research get", "读取研究结论、来源和不可执行草稿；不构成交易授权。", z.object({ runId: id("run") }).strict(), false,
     ({ runId }) => runCli(["research", "get", runId], deps));
 
+  add("taoalpha_research_evaluation", "research evaluation", "读取已保存的最终评价报告；不运行评价，不构成交易授权。",
+    z.object({ experimentId: z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/), version: z.number().int().positive().max(Number.MAX_SAFE_INTEGER) }).strict(), false,
+    ({ experimentId, version }) => runCli(["research", "evaluation", experimentId, String(version)], deps));
+
   add("taoalpha_method_create", "research method-create", "追加本地方法记录；无交易所写入，论断未核验。", methodRecordSchema, true,
     async input => ({ok:true, operation:"research method-create",mode:"M0_readonly_research", asOf:deps.now().toISOString(),value:createMethodRecord(deps.db,input,deps.now),summaryZh:"本地方法记录已追加；不可执行。"}));
   add("taoalpha_method_get", "research method-get", "读取本地方法记录。", z.object({recordId:id("method")}).strict(), false,

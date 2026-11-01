@@ -17,7 +17,7 @@ import type { ResearchRunView, ResearchTask } from "../../src/research/research-
 import { adversaryReport, fundamentalsReport, marketStructureReport, quantReport, synthesisReport, seedBundle } from "../helpers/research-fixtures.ts";
 import { DomainError } from "../../src/lib/errors.ts";
 
-const TOOL_NAMES = ["taoalpha_research_conflicts", "taoalpha_method_context", "taoalpha_method_create", "taoalpha_method_get", "taoalpha_status", "taoalpha_scan", "taoalpha_bundle", "taoalpha_evidence", "taoalpha_research_start", "taoalpha_research_tasks", "taoalpha_research_submit", "taoalpha_research_get"];
+const TOOL_NAMES = ["taoalpha_research_conflicts", "taoalpha_method_context", "taoalpha_method_create", "taoalpha_method_get", "taoalpha_status", "taoalpha_scan", "taoalpha_bundle", "taoalpha_evidence", "taoalpha_research_start", "taoalpha_research_tasks", "taoalpha_research_submit", "taoalpha_research_get", "taoalpha_research_evaluation"];
 
 function removeTestDirectory(directory: string): void {
   const target = realpathSync(directory);

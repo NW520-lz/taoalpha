@@ -1,5 +1,6 @@
 import {z} from 'zod';
 import {Decimal} from '../lib/decimal.ts';
+import {DomainError} from '../lib/errors.ts';
 import {canonicalJson,sha256} from '../lib/hash.ts';
 import {inTransaction,type Db} from '../store/db.ts';
 import {stressAndBaselines} from './baselines.ts';
@@ -23,6 +24,12 @@ function storedReport(db:Db,experimentId:string,version:number) {
  if(!row) return null;
  if(sha256(row.content)!==row.content_sha256) throw new Error('final evaluation report integrity failure');
  return JSON.parse(row.content);
+}
+
+/** Reads a stored final report without ever running one; null when none exists for that version. */
+export function getFinalEvaluation(db:Db,experimentId:string,version:number) {
+ if(!/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(experimentId) || !Number.isSafeInteger(version) || version<1) throw new DomainError('INVALID_INPUT','Final evaluation request rejected',[{ruleId:'research.evaluation_request'}]);
+ return storedReport(db,experimentId,version);
 }
 
 /**
