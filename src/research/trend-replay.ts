@@ -11,7 +11,7 @@ const window=z.number().int().min(1).max(1000);
 const nonNegative=z.string().max(64).refine(v=>isDecimalString(v) && dec(v).gte(0));
 // Same shape as history manifest candles (src/market/history.ts); volume is carried but unused here.
 const volume=z.object({vol:nonNegative,volCcy:nonNegative,volCcyQuote:nonNegative,units:z.object({vol:z.enum(['base','contracts']),volCcy:z.enum(['quote','base']),volCcyQuote:z.literal('quote')}).strict()}).strict();
-const candle=z.object({ts:timestamp,closeTime:timestamp,open:positive,high:positive,low:positive,close:positive,volume:volume.optional()}).strict();
+export const replayCandle=z.object({ts:timestamp,closeTime:timestamp,open:positive,high:positive,low:positive,close:positive,volume:volume.optional()}).strict();
 /** Parameters an experiment registration freezes; candles and bar size come from the bound history. */
 export const trendReplayConfigSchema=z.object({market:z.object({product:z.enum(['spot','usdt_perpetual']),quote:z.literal('USDT'),baseQuantity:positive}).strict(),rule:z.object({kind:z.literal('breakout_atr_trailing'),breakoutLookback:window,atrPeriod:window,initialStopAtr:positive,trailingStopAtr:positive}).strict(),cost:z.object({entryFeePpm:ppm,exitFeePpm:ppm,entryImpactPpm:ppm,exitImpactPpm:ppm,funding:z.enum(['not_applicable','realized_events'])}).strict(),
  // Cross-sectional selection for universe replays; ignored by the single-instrument replay.
@@ -20,11 +20,21 @@ export type TrendReplayConfig=z.infer<typeof trendReplayConfigSchema>;
 /** Spot has no funding; a perpetual long settles realized public funding events. */
 export const fundingMatchesProduct=(c:TrendReplayConfig)=>(c.market.product==='spot')===(c.cost.funding==='not_applicable');
 const fundingEvent=z.object({fundingTime:timestamp,realizedRate:z.string().max(32).refine(isDecimalString)}).strict();
-const schema=trendReplayConfigSchema.extend({schemaVersion:z.literal(1),resolutionMs:z.number().int().min(1).max(86400000),candles:z.array(candle).min(1).max(100000),fundingEvents:z.array(fundingEvent).max(100000).optional()}).strict()
+const schema=trendReplayConfigSchema.extend({schemaVersion:z.literal(1),resolutionMs:z.number().int().min(1).max(86400000),candles:z.array(replayCandle).min(1).max(100000),fundingEvents:z.array(fundingEvent).max(100000).optional()}).strict()
  .refine(v=>fundingMatchesProduct(v) && (v.fundingEvents!==undefined)===(v.market.product==='usdt_perpetual'));
 function invalid():never {throw new DomainError('INVALID_INPUT','Research replay input rejected',[{ruleId:'research.trend_replay_input'}]);}
 export type Bar={open:Decimal;high:Decimal;low:Decimal;close:Decimal};
 export type ExitReason='stop'|'gap_through_stop'|'end_of_data';
+
+/** Decimal bars from contiguous closed candles; gaps are split by the caller, never bridged here. */
+export function contiguousBars(candles:Array<z.infer<typeof replayCandle>>,resolutionMs:number):Bar[] {
+ return candles.map((c,i)=>{
+  if(c.closeTime!==c.ts+resolutionMs || (i>0 && c.ts!==candles[i-1]!.ts+resolutionMs)) invalid();
+  const b={open:dec(c.open),high:dec(c.high),low:dec(c.low),close:dec(c.close)};
+  if(b.low.gt(Decimal.min(b.open,b.close)) || b.high.lt(Decimal.max(b.open,b.close))) invalid();
+  return b;
+ });
+}
 
 /**
  * One held bar against the trailing stop. Intrabar order is unknown, so the stop uses only extremes of
@@ -73,13 +83,7 @@ export function replayTrendCandles(raw:unknown) {
  const input=parseReplayInput(schema,raw);
  const {rule,cost}=input;
  const qty=dec(input.market.baseQuantity);
- const bars:Bar[]=input.candles.map((c,i)=>{
-  // Candles must be contiguous closed bars; gaps are split by the caller, never bridged here.
-  if(c.closeTime!==c.ts+input.resolutionMs || (i>0 && c.ts!==input.candles[i-1]!.ts+input.resolutionMs)) invalid();
-  const b={open:dec(c.open),high:dec(c.high),low:dec(c.low),close:dec(c.close)};
-  if(b.low.gt(Decimal.min(b.open,b.close)) || b.high.lt(Decimal.max(b.open,b.close))) invalid();
-  return b;
- });
+ const bars=contiguousBars(input.candles,input.resolutionMs);
  const trades=[], skips:Array<{signalIndex:number;reason:'no_entry_candle'}>=[];
  let i=Math.max(rule.breakoutLookback,rule.atrPeriod);
  while(i<bars.length) {
