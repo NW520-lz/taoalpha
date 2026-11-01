@@ -30,3 +30,11 @@
 - `noTrade`：净收益与回撤均为 0。
 
 未登记倍数时返回 `blocked` / `rules_incomplete`；最终评价窗口仍封存。
+
+## 参数邻域敏感性
+
+`gates.sensitivity` 冻结：每个参数的邻域取值（`breakoutLookback`、`atrPeriod`、`initialStopAtr`、`trailingStopAtr` 中至少一个；显式列出、严格递增、至少两个且必须包含登记值，因此整数取整规则也一并冻结），可选的止损二维网格，相邻点最大相对变化 `maxAdjacentChange`，以及是否要求所有点扣成本为正。
+
+`assessParameterSensitivity(db, registry, {experimentId, version, expected})` 只在探索窗口上逐一替换单个参数回放，其余参数保持登记值。接口没有窗口参数，验证与最终评价窗口不能被扫描。每个参数返回各点净收益与相邻相对变化（任一侧无已实现交易或基数为 0 时为 `null`）。判定 `sensitivityGate`：相邻变化超限或（要求时）存在不为正的点为 `failed`；存在没有已实现交易的点为 `insufficient`；否则 `met`。
+
+止损网格只报告不判定，每格标明 `initialStopCanBind`：移动止损从入场价起算，当移动倍数不大于初始倍数时初始止损永远不会生效，该格实际只在测移动止损。`attempts` 是从登记枚举出的全部尝试数，报告列出所有点而不是最优点。

@@ -3,6 +3,7 @@ import { parseConfirmationProposal } from '../control/confirmation-schema.ts';
 import { DomainError } from '../lib/errors.ts';
 import { canonicalJson, sha256 } from '../lib/hash.ts';
 import { getRow, inTransaction, type Db } from '../store/db.ts';
+import { dec } from '../lib/decimal.ts';
 import { evaluationGatesSchema } from './gates.ts';
 import { trendReplayConfigSchema } from './trend-replay.ts';
 
@@ -27,6 +28,8 @@ const schema=z.strictObject({experimentId:reference,version,attemptId:reference,
  .refine(v=>v.replay===undefined || v.data.scope?.product===v.replay.market.product)
  .refine(v=>v.gates===undefined || v.replay!==undefined)
  // Stressed costs must stay a valid share of notional (at most 100% per side).
+ // Every sensitivity neighbourhood is centred on the registered parameter value.
+ .refine(v=>!v.gates?.sensitivity || !v.replay || Object.entries(v.gates.sensitivity.neighbourhoods).every(([key,values])=>{const registered=v.replay!.rule[key as 'atrPeriod'];return (values as Array<number|string>).some(x=>typeof x==='number' ? x===registered : dec(x).eq(String(registered)));}))
  .refine(v=>!v.gates?.costStressMultipliers || !v.replay || Math.max(...Object.values(v.replay.cost).filter((c):c is number=>typeof c==='number'))*Math.max(...v.gates.costStressMultipliers)<=1000000);
 type Input=z.infer<typeof schema>;
 export type ExperimentRegistration=Input & {schemaVersion:1|2|3;registeredAt:string;contentSha256:string;status:'unvalidated';dataAvailability:'unverified';executionAuthorized:false};
