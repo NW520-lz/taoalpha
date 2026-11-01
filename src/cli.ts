@@ -172,7 +172,7 @@ async function research(args: string[], deps: CliDeps): Promise<Output> {
     case "evaluation": {
       // Read-only: a missing report is reported, never produced here.
       const { positionals } = parse(rest, {});
-      const version = /^[1-9]d{0,14}$/.test(positionals[1] ?? "") ? Number(positionals[1]) : undefined;
+      const version = /^[1-9]\d{0,14}$/.test(positionals[1] ?? "") ? Number(positionals[1]) : undefined;
       if (positionals.length !== 2 || !positionals[0] || version === undefined) throw usageError("research evaluation requires <experimentId> <version>");
       const report = getFinalEvaluation(deps.db, positionals[0], version);
       return { value: { experimentId: positionals[0], version, state: report ? "evaluated" : "no_report", report },
