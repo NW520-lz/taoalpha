@@ -14,20 +14,22 @@ const iso=(hour:number)=>new Date(hour*H).toISOString();
 export const windowsAt=(a:number,b:number,c:number)=>({exploration:{start:iso(0),end:iso(a)},validation:{start:iso(a),end:iso(b)},evaluation:{start:iso(b),end:iso(c)}});
 
 /** Public OKX history candles as the fake client returns them: newest first, one page. */
-export function fakeHistoryClient(bars:number[][],omit:number[]=[]):PublicClient {
+export function fakeHistoryClient(bars:number[][],omit:number[]=[],funding:Array<{fundingTime:number;realizedRate:string}>=[]):PublicClient {
  const rows=bars.map((p,i)=>[String(i*H),...p.map(String),'1','100','100','1']).filter((_,i)=>!omit.includes(i)).reverse();
- const pages=[rows,[]];
+ const fundingRows=[...funding].reverse().map(f=>({instId:'BTC-USDT-SWAP',instType:'SWAP',fundingTime:String(f.fundingTime),fundingRate:f.realizedRate,realizedRate:f.realizedRate}));
+ const pages:Record<string,unknown[][]>={'/api/v5/market/history-candles':[rows,[]],'/api/v5/public/funding-rate-history':[fundingRows,[]]};
  return {site:'global',async get<T>(path:string,query:Record<string,string>){
-  const data=(pages.shift() ?? []) as T[]; const endpoint=path+'?'+new URLSearchParams(query);
+  const data=(pages[path]?.shift() ?? []) as T[]; const endpoint=path+'?'+new URLSearchParams(query);
   return {ok:true as const,endpoint,rows:data,raw:{endpoint,receivedAt:'1970-01-02T00:00:00.000Z',status:200,body:JSON.stringify({code:'0',data})}};
  }};
 }
 
-/** In-memory db with a saved manifest of `bars` (1H, BTC-USDT spot) and a matching registration input. */
-export async function setup(omit:number[]=[],bars:number[][]=ohlc) {
+/** In-memory db with a saved 1H manifest of `bars` (BTC-USDT spot, or the perpetual with funding) and a matching registration input. */
+export async function setup(omit:number[]=[],bars:number[][]=ohlc,perpetual?:{funding:Array<{fundingTime:number;realizedRate:string}>}) {
  const db=openDb(':memory:'); const registry=createExperimentRegistry(db,now);
- const manifest=await collectHistory(fakeHistoryClient(bars,omit),{instId:'BTC-USDT',product:'spot',resolution:'1H',start:0,end:bars.length*H,asOf:bars.length*H,limit:100,maxPages:2,capturedAt:'1970-01-02T00:00:00.000Z'});
+ const scope=perpetual ? {...expected,instId:'BTC-USDT-SWAP',product:'usdt_perpetual'} as const : expected;
+ const manifest=await collectHistory(fakeHistoryClient(bars,omit,perpetual?.funding),{instId:scope.instId,product:scope.product,resolution:'1H',start:0,end:bars.length*H,asOf:bars.length*H,limit:100,maxPages:2,capturedAt:'1970-01-02T00:00:00.000Z'});
  const id=saveHistory(db,manifest);
- const input={experimentId:'experiment:trend',version:1,attemptId:'attempt:trend:1',strategy:{id:'strategy:trend',version:1,entryRules:'close above prior highs',exitRules:'ATR initial and trailing stop',invalidationRules:'stop'},data:{reference:id,sha256:id.slice(8),version:manifest.parsingVersion,scope:expected},code:{reference:'code:trend',sha256:'b'.repeat(64),version:'v1'},costs:{fees:'10 bps per side',spread:'in impact',slippage:'20 bps per side',funding:'not applicable',execution:'next open'},windows:windowsAt(6,9,bars.length),evaluation:{metrics:'net',thresholds:'positive',baseline:'hold',method:'replay'},replay};
- return {db,registry,manifest,input};
+ const input={experimentId:'experiment:trend',version:1,attemptId:'attempt:trend:1',strategy:{id:'strategy:trend',version:1,entryRules:'close above prior highs',exitRules:'ATR initial and trailing stop',invalidationRules:'stop'},data:{reference:id,sha256:id.slice(8),version:manifest.parsingVersion,scope},code:{reference:'code:trend',sha256:'b'.repeat(64),version:'v1'},costs:{fees:'10 bps per side',spread:'in impact',slippage:'20 bps per side',funding:'not applicable',execution:'next open'},windows:windowsAt(6,9,bars.length),evaluation:{metrics:'net',thresholds:'positive',baseline:'hold',method:'replay'},replay:perpetual ? {...replay,market:{...replay.market,product:'usdt_perpetual'},cost:{...replay.cost,funding:'realized_events'}} : replay};
+ return {db,registry,manifest,input,scope};
 }

@@ -13,11 +13,29 @@ const nonNegative=z.string().max(64).refine(v=>isDecimalString(v) && dec(v).gte(
 const volume=z.object({vol:nonNegative,volCcy:nonNegative,volCcyQuote:nonNegative,units:z.object({vol:z.enum(['base','contracts']),volCcy:z.enum(['quote','base']),volCcyQuote:z.literal('quote')}).strict()}).strict();
 const candle=z.object({ts:timestamp,closeTime:timestamp,open:positive,high:positive,low:positive,close:positive,volume:volume.optional()}).strict();
 /** Parameters an experiment registration freezes; candles and bar size come from the bound history. */
-export const trendReplayConfigSchema=z.object({market:z.object({product:z.literal('spot'),quote:z.literal('USDT'),baseQuantity:positive}).strict(),rule:z.object({kind:z.literal('breakout_atr_trailing'),breakoutLookback:window,atrPeriod:window,initialStopAtr:positive,trailingStopAtr:positive}).strict(),cost:z.object({entryFeePpm:ppm,exitFeePpm:ppm,entryImpactPpm:ppm,exitImpactPpm:ppm,funding:z.literal('not_applicable')}).strict()}).strict();
+export const trendReplayConfigSchema=z.object({market:z.object({product:z.enum(['spot','usdt_perpetual']),quote:z.literal('USDT'),baseQuantity:positive}).strict(),rule:z.object({kind:z.literal('breakout_atr_trailing'),breakoutLookback:window,atrPeriod:window,initialStopAtr:positive,trailingStopAtr:positive}).strict(),cost:z.object({entryFeePpm:ppm,exitFeePpm:ppm,entryImpactPpm:ppm,exitImpactPpm:ppm,funding:z.enum(['not_applicable','realized_events'])}).strict()}).strict();
 export type TrendReplayConfig=z.infer<typeof trendReplayConfigSchema>;
-const schema=trendReplayConfigSchema.extend({schemaVersion:z.literal(1),resolutionMs:z.number().int().min(1).max(86400000),candles:z.array(candle).min(1).max(100000)}).strict();
+/** Spot has no funding; a perpetual long settles realized public funding events. */
+export const fundingMatchesProduct=(c:TrendReplayConfig)=>(c.market.product==='spot')===(c.cost.funding==='not_applicable');
+const fundingEvent=z.object({fundingTime:timestamp,realizedRate:z.string().max(32).refine(isDecimalString)}).strict();
+const schema=trendReplayConfigSchema.extend({schemaVersion:z.literal(1),resolutionMs:z.number().int().min(1).max(86400000),candles:z.array(candle).min(1).max(100000),fundingEvents:z.array(fundingEvent).max(100000).optional()}).strict()
+ .refine(v=>fundingMatchesProduct(v) && (v.fundingEvents!==undefined)===(v.market.product==='usdt_perpetual'));
 function invalid():never {throw new DomainError('INVALID_INPUT','Research replay input rejected',[{ruleId:'research.trend_replay_input'}]);}
 type Bar={open:Decimal;high:Decimal;low:Decimal;close:Decimal};
+type FundingEvent=z.infer<typeof fundingEvent>;
+
+/**
+ * Long funding over settlements strictly inside (fromTs, toTs), each on the quantity's notional at the
+ * close of the last candle completed by that settlement. Positive is paid, negative received.
+ */
+export function fundingCost(qty:Decimal,candles:Array<{closeTime:number;close:string}>,events:FundingEvent[],fromTs:number,toTs:number):Decimal {
+ let funding=new Decimal(0);
+ for(const e of events) if(e.fundingTime>fromTs && e.fundingTime<toTs) {
+  const marked=candles.findLast(c=>c.closeTime<=e.fundingTime)!;
+  funding=funding.plus(qty.times(marked.close).times(e.realizedRate));
+ }
+ return funding;
+}
 
 /** Simple average of true range over `period` bars ending at `i`; requires i >= period. */
 function atr(bars:Bar[],i:number,period:number):Decimal {
@@ -62,11 +80,17 @@ export function replayTrendCandles(raw:unknown) {
   const fees=buy.times(cost.entryFeePpm).plus(sell.times(cost.exitFeePpm)).div(1000000);
   const impact=buy.times(cost.entryImpactPpm).plus(sell.times(cost.exitImpactPpm)).div(1000000);
   const gross=sell.minus(buy);
-  trades.push({signalIndex:i,entryIndex:i+1,exitIndex:t,exitReason,atrAtSignal:range.toFixed(),initialStopPrice:initialStop.toFixed(),trailingDistance:distance.toFixed(),entryPrice:entry.toFixed(),exitPrice:exit.toFixed(),grossUsdt:gross.toFixed(),feesUsdt:fees.toFixed(),impactUsdt:impact.toFixed(),netUsdt:gross.minus(fees).minus(impact).toFixed()});
+  // Settlements strictly after the entry open and before the exit instant (bar close when the stop time is unknown).
+  const entryTs=input.candles[i+1]!.ts, exitTs=exitReason==='gap_through_stop' ? input.candles[t]!.ts : input.candles[t]!.closeTime;
+  const funding=fundingCost(qty,input.candles,input.fundingEvents ?? [],entryTs,exitTs);
+  trades.push({signalIndex:i,entryIndex:i+1,exitIndex:t,exitReason,atrAtSignal:range.toFixed(),initialStopPrice:initialStop.toFixed(),trailingDistance:distance.toFixed(),entryPrice:entry.toFixed(),exitPrice:exit.toFixed(),grossUsdt:gross.toFixed(),feesUsdt:fees.toFixed(),impactUsdt:impact.toFixed(),fundingUsdt:funding.toFixed(),netUsdt:gross.minus(fees).minus(impact).minus(funding).toFixed()});
   if(exitReason==='end_of_data') break;
   i=t;
  }
  const unit={price:'USDT per base coin',quantity:'base coin',result:'USDT'} as const;
- const assumptions=['entry_at_next_open','stop_uses_prior_completed_bar_extremes','gap_fills_at_open','end_of_data_marked_at_last_close','fees_and_impact_on_notional_once_per_side'];
- return {schemaVersion:1 as const,engineVersion:'breakout-atr-trailing-v1',inputSha256:hashJson(input),status:'insufficient' as const,executionAuthorized:false as const,resultKind:'hypothetical_candles' as const,unit,assumptions,missing:assessHistoricalReadiness().missing,skips,hypotheticalTrades:trades};
+ const perpetual=input.market.product==='usdt_perpetual';
+ const assumptions=['entry_at_next_open','stop_uses_prior_completed_bar_extremes','gap_fills_at_open','end_of_data_marked_at_last_close','fees_and_impact_on_notional_once_per_side',...(perpetual ? ['funding_on_prior_close_notional_until_exit_bar_close','quantity_in_base_coin_not_contracts'] : [])];
+ // Public funding history is short and has no verified cadence, so coverage is never claimed complete.
+ const missing=[...assessHistoricalReadiness().missing,...(perpetual ? ['funding_coverage_unknown'] : [])];
+ return {schemaVersion:1 as const,engineVersion:'breakout-atr-trailing-v1',inputSha256:hashJson(input),status:'insufficient' as const,executionAuthorized:false as const,resultKind:'hypothetical_candles' as const,unit,assumptions,missing,skips,hypotheticalTrades:trades};
 }

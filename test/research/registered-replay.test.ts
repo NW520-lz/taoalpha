@@ -95,7 +95,7 @@ test('a window reports evaluation metrics computed from its replayed trades',asy
   registry.register(input);
   const {metrics}=replayRegisteredExperiment(db,registry,{experimentId:'experiment:trend',version:1,expected,window:'exploration'});
   // One hand-worked trade: gross 11, fees 0.431, impact 0.862, net 9.707; costs/gross = 1.293/11.
-  assert.deepEqual(metrics,{realizedTrades:1,markedAtWindowEnd:{trades:0,netUsdt:null},unresolvedAtGap:0,grossUsdt:'11',feesUsdt:'0.431',impactUsdt:'0.862',costUsdt:'1.293',netUsdt:'9.707',costToGrossRatio:'0.1175454545',wins:1,winRate:'1',averageWinUsdt:'9.707',averageLossUsdt:null,maxDrawdownUsdt:'0',tradeNetsUsdt:['9.707']});
+  assert.deepEqual(metrics,{realizedTrades:1,markedAtWindowEnd:{trades:0,netUsdt:null},unresolvedAtGap:0,grossUsdt:'11',feesUsdt:'0.431',impactUsdt:'0.862',fundingUsdt:'0',costUsdt:'1.293',netUsdt:'9.707',costToGrossRatio:'0.1175454545',wins:1,winRate:'1',averageWinUsdt:'9.707',averageLossUsdt:null,maxDrawdownUsdt:'0',tradeNetsUsdt:['9.707']});
  }finally{db.close()}
 });
 
@@ -107,7 +107,7 @@ test('a stopped-out loss after a winner drives drawdown, averages and win rate',
   registry.register({...input,windows});
   const {metrics}=replayRegisteredExperiment(db,registry,{experimentId:'experiment:trend',version:1,expected,window:'exploration'});
   // Loss: gross 2*(112.25-118)=-11.5, fees 0.236+0.2245, impact 0.472+0.449, net -12.8815.
-  assert.deepEqual(metrics,{realizedTrades:2,markedAtWindowEnd:{trades:0,netUsdt:null},unresolvedAtGap:0,grossUsdt:'-0.5',feesUsdt:'0.8915',impactUsdt:'1.783',costUsdt:'2.6745',netUsdt:'-3.1745',costToGrossRatio:null,wins:1,winRate:'0.5',averageWinUsdt:'9.707',averageLossUsdt:'-12.8815',maxDrawdownUsdt:'12.8815',tradeNetsUsdt:['9.707','-12.8815']});
+  assert.deepEqual(metrics,{realizedTrades:2,markedAtWindowEnd:{trades:0,netUsdt:null},unresolvedAtGap:0,grossUsdt:'-0.5',feesUsdt:'0.8915',impactUsdt:'1.783',fundingUsdt:'0',costUsdt:'2.6745',netUsdt:'-3.1745',costToGrossRatio:null,wins:1,winRate:'0.5',averageWinUsdt:'9.707',averageLossUsdt:'-12.8815',maxDrawdownUsdt:'12.8815',tradeNetsUsdt:['9.707','-12.8815']});
  }finally{db.close()}
 });
 
@@ -127,7 +127,7 @@ test('a position open at a data gap is counted but never enters the metrics',asy
   registry.register(input);
   const {metrics}=replayRegisteredExperiment(db,registry,{experimentId:'experiment:trend',version:1,expected,window:'exploration'});
   // No realized trade: amounts are not applicable rather than a zero result.
-  assert.deepEqual(metrics,{realizedTrades:0,markedAtWindowEnd:{trades:0,netUsdt:null},unresolvedAtGap:1,grossUsdt:null,feesUsdt:null,impactUsdt:null,costUsdt:null,netUsdt:null,costToGrossRatio:null,wins:0,winRate:null,averageWinUsdt:null,averageLossUsdt:null,maxDrawdownUsdt:null,tradeNetsUsdt:[]});
+  assert.deepEqual(metrics,{realizedTrades:0,markedAtWindowEnd:{trades:0,netUsdt:null},unresolvedAtGap:1,grossUsdt:null,feesUsdt:null,impactUsdt:null,fundingUsdt:null,costUsdt:null,netUsdt:null,costToGrossRatio:null,wins:0,winRate:null,averageWinUsdt:null,averageLossUsdt:null,maxDrawdownUsdt:null,tradeNetsUsdt:[]});
  }finally{db.close()}
 });
 
@@ -151,4 +151,16 @@ test('a window without any candles is blocked as missing evidence, and unaligned
   const result=replayRegisteredExperiment(second.db,second.registry,{experimentId:'experiment:trend',version:1,expected,window:'exploration'});
   assert.deepEqual(result.segments.map(s=>[s.firstOpenMs,s.candles,s.startsAt,s.endsAt]),[[H,5,'window_start','window_end']]);
  }finally{second.db.close()}
+});
+
+test('a perpetual window settles realized funding in its metrics and flags unknown funding coverage',async()=>{
+ const {db,registry,input,scope}=await setup([],ohlc,{funding:[{fundingTime:4*H,realizedRate:'0.001'},{fundingTime:5*H,realizedRate:'-0.0005'}]});try {
+  registry.register(input);
+  const result=replayRegisteredExperiment(db,registry,{experimentId:'experiment:trend',version:1,expected:scope,window:'exploration'});
+  // Settlements at 4H (close 109) and 5H (close 114): 0.218-0.114 paid on top of 1.293 fees and impact.
+  assert.deepEqual([result.metrics!.fundingUsdt,result.metrics!.costUsdt,result.metrics!.netUsdt],['0.104','1.397','9.603']);
+  assert.ok(result.segments[0]!.result.missing.includes('funding_coverage_unknown'));
+  const {replay:_,...rest}=input;
+  expectDomainError(()=>registry.register({...rest,version:2,attemptId:'attempt:trend:2',replay:{...replay,market:{...replay.market,product:'usdt_perpetual'}}}),'INVALID_INPUT');
+ }finally{db.close()}
 });

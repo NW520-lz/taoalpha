@@ -114,3 +114,16 @@ test('rejects getters without evaluating or echoing them',()=>{
  const hostile=Object.defineProperty({...base},'candles',{enumerable:true,get(){throw Error('private-sentinel')}});
  assert.throws(()=>replayTrendCandles(hostile),(error:unknown)=>{assert.doesNotMatch(String(error)+JSON.stringify(error),/sentinel/);return true});
 });
+
+test('a perpetual long pays or receives realized funding at each settlement it holds through',()=>{
+ const perp={...base,market:{...base.market,product:'usdt_perpetual'},cost:{...base.cost,funding:'realized_events'}};
+ // Entry bar 3 opens at 3H; the stop exit happens inside bar 5, bounded by its close at 6H.
+ // Held settlements: 4H at close 109 (+0.001) and 5H at close 114 (-0.0005); 3H and 6H are outside.
+ const fundingEvents=[3,4,5,6].map((h,i)=>({fundingTime:h*H,realizedRate:['0.5','0.001','-0.0005','0.5'][i]!}));
+ const result=replayTrendCandles({...perp,fundingEvents});
+ const trade=result.hypotheticalTrades[0]!;
+ assert.deepEqual([trade.fundingUsdt,trade.netUsdt],['0.104','9.603']);
+ assert.ok(result.missing.includes('funding_coverage_unknown'));
+ assert.equal(replayTrendCandles(base).hypotheticalTrades[0]!.fundingUsdt,'0');
+ for(const bad of [{...base,fundingEvents},{...perp,cost:{...perp.cost,funding:'not_applicable'},fundingEvents},{...perp}]) assert.throws(()=>replayTrendCandles(bad),(e:unknown)=>(e as {code?:string}).code==='INVALID_INPUT');
+});

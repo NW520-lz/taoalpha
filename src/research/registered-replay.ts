@@ -8,6 +8,9 @@ import type {createExperimentRegistry,ExperimentRegistration} from './experiment
 import {parseReplayInput} from './research-evaluation.ts';
 import {replayTrendCandles} from './trend-replay.ts';
 
+/** Realized public funding events of a perpetual manifest; spot replays take none. */
+export const fundingEventsFor=(loaded:LoadedExperiment,replay:TrendReplay)=>replay.market.product==='usdt_perpetual' ? {fundingEvents:loaded.manifest.funding.events.map(({fundingTime,realizedRate})=>({fundingTime,realizedRate}))} : {};
+
 // Scope and identifiers are validated by inspectExperimentHistory; this only fixes the request shape.
 const requestSchema=z.strictObject({experimentId:z.string(),version:z.number(),expected:z.unknown(),window:z.enum(['exploration','validation','evaluation'])});
 export type Registry=Pick<ReturnType<typeof createExperimentRegistry>,'get'>;
@@ -27,7 +30,7 @@ function windowMetrics(segments:Segment[]) {
  const trades=all.filter(t=>t.exitReason!=='end_of_data');
  const marked=all.filter(t=>t.exitReason==='end_of_data' && t.endsAt==='window_end');
  const sum=(pick:(t:typeof trades[number])=>string)=>total(trades.map(t=>new Decimal(pick(t))));
- const gross=sum(t=>t.grossUsdt), fees=sum(t=>t.feesUsdt), impact=sum(t=>t.impactUsdt), net=sum(t=>t.netUsdt);
+ const gross=sum(t=>t.grossUsdt), fees=sum(t=>t.feesUsdt), impact=sum(t=>t.impactUsdt), funding=sum(t=>t.fundingUsdt), net=sum(t=>t.netUsdt);
  const nets=trades.map(t=>new Decimal(t.netUsdt)), winners=nets.filter(n=>n.gt(0)), losers=nets.filter(n=>n.lte(0));
  // Drawdown of cumulative realized net, starting from zero.
  let cumulative=new Decimal(0), peak=new Decimal(0), drawdown=new Decimal(0);
@@ -37,8 +40,8 @@ function windowMetrics(segments:Segment[]) {
   realizedTrades:trades.length,
   markedAtWindowEnd:{trades:marked.length,netUsdt:marked.length ? total(marked.map(t=>new Decimal(t.netUsdt))).toFixed() : null},
   unresolvedAtGap:all.length-trades.length-marked.length,
-  grossUsdt:amount(gross),feesUsdt:amount(fees),impactUsdt:amount(impact),costUsdt:amount(fees.plus(impact)),netUsdt:amount(net),
-  costToGrossRatio:gross.gt(0) ? ratio(fees.plus(impact),gross) : null,
+  grossUsdt:amount(gross),feesUsdt:amount(fees),impactUsdt:amount(impact),fundingUsdt:amount(funding),costUsdt:amount(fees.plus(impact).plus(funding)),netUsdt:amount(net),
+  costToGrossRatio:gross.gt(0) ? ratio(fees.plus(impact).plus(funding),gross) : null,
   wins:winners.length,winRate:any ? ratio(new Decimal(winners.length),new Decimal(trades.length)) : null,
   averageWinUsdt:winners.length ? ratio(total(winners),new Decimal(winners.length)) : null,
   averageLossUsdt:losers.length ? ratio(total(losers),new Decimal(losers.length)) : null,
@@ -84,7 +87,7 @@ export function replayWindow(loaded:LoadedExperiment,name:WindowName,replay:Tren
   // A bound counts as the window edge when no whole bar fits between it and the segment.
   const startsAt=candles[0]!.ts-resolutionMs<range.start ? 'window_start' as const : 'data_gap' as const;
   const endsAt=candles.at(-1)!.closeTime+resolutionMs>range.end ? 'window_end' as const : 'data_gap' as const;
-  const result=replayTrendCandles({schemaVersion:1,...replay,resolutionMs,candles});
+  const result=replayTrendCandles({schemaVersion:1,...replay,resolutionMs,candles,...fundingEventsFor(loaded,replay)});
   // A position still open where data is missing has an unknown outcome; its mark is not a result.
   const openAtGap=endsAt==='data_gap' && result.hypotheticalTrades.at(-1)?.exitReason==='end_of_data';
   return {firstOpenMs:candles[0]!.ts,lastCloseMs:candles.at(-1)!.closeTime,candles:candles.length,startsAt,endsAt,openAtGap,result};

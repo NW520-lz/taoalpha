@@ -5,7 +5,7 @@ import { canonicalJson, sha256 } from '../lib/hash.ts';
 import { getRow, inTransaction, type Db } from '../store/db.ts';
 import { dec } from '../lib/decimal.ts';
 import { evaluationGatesSchema } from './gates.ts';
-import { trendReplayConfigSchema } from './trend-replay.ts';
+import { fundingMatchesProduct, trendReplayConfigSchema } from './trend-replay.ts';
 
 const reference=z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/);
 const text=z.string().min(1).max(2000).refine(v=>v.trim()===v && v.length>0);
@@ -25,7 +25,7 @@ const schema=z.strictObject({experimentId:reference,version,attemptId:reference,
  replay:trendReplayConfigSchema.optional(),
  gates:evaluationGatesSchema.optional()
 }).refine(v=>{const {exploration:a,validation:b,evaluation:c}=v.windows; const t=[a.start,a.end,b.start,b.end,c.start,c.end].map(Date.parse); return t.every(Number.isFinite) && t[0]!<t[1]! && t[1]!<=t[2]! && t[2]!<t[3]! && t[3]!<=t[4]! && t[4]!<t[5]!})
- .refine(v=>v.replay===undefined || v.data.scope?.product===v.replay.market.product)
+ .refine(v=>v.replay===undefined || (v.data.scope?.product===v.replay.market.product && fundingMatchesProduct(v.replay)))
  .refine(v=>v.gates===undefined || v.replay!==undefined)
  // Stressed costs must stay a valid share of notional (at most 100% per side).
  // Every sensitivity neighbourhood is centred on the registered parameter value.
