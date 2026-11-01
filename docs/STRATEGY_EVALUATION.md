@@ -73,3 +73,11 @@
 ## 只读查看入口
 
 CLI `research evaluation <experimentId> <version>` 和 MCP 工具 `taoalpha_research_evaluation`（只读标注）通过同一业务逻辑读取已保存的最终评价报告。有报告时 `state: evaluated` 并返回完整报告；没有时 `state: no_report`、`report: null`，表示该实验版本未登记或尚未评价。入口绝不运行评价、不打开最终评价窗口、不产生交易所写请求。最终评价本身仍只能通过内部的 `runFinalEvaluation` 运行。
+
+## 规则与 Agent 否决对照
+
+实验登记的可选 `agentVetoes`（需同时登记 `replay.selection`）冻结一组否决，每条指向一个候选信号（标的与信号 K 线开盘时间）及产生它的研究运行。`compareAgentVeto(db, registry, {experimentId, version, expected, window})` 在探索或验证窗口内，分别运行纯规则选币和应用有效否决后的选币，返回两者的指标和净收益差。
+
+一条否决只有在以下条件都满足时才生效：研究运行存在、已经得出综合结论，并且运行与其证据包的创建时间都不晚于信号 K 线收盘。证据晚于信号的否决记为 `evidence_after_signal`，因为当时不可能知道这些信息。被否决的候选在排名前以 `agent_veto` 跳过，空出的仓位由下一个候选填补。
+
+当前研究证据包都采集于运行当时，没有历史时点的证据，因此对历史窗口的否决都会被拒绝，两组结果相同。这是如实结果，不代表 Agent 没有价值：真实对照需要先建立历史时点的研究证据。报告列出各研究运行的自报运行方式（`hostVerified` 恒为 false），并标明调用成本未记录、多个 Agent 报告不是统计独立样本。

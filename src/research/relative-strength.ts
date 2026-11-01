@@ -4,13 +4,15 @@ import {DomainError} from '../lib/errors.ts';
 import {getHistory} from '../market/history.ts';
 import type {Db} from '../store/db.ts';
 import {inspectBoundHistory} from './experiment-history.ts';
-import {fundingEventsFor,loadRegisteredExperiment,tradeMetrics,windowCandles,type Registry} from './registered-replay.ts';
+import {fundingEventsFor,loadRegisteredExperiment,tradeMetrics,windowCandles,type LoadedExperiment,type Registry,type WindowName} from './registered-replay.ts';
 import {parseReplayInput} from './research-evaluation.ts';
 import {atr,checkStop,fundingCost,tradeCosts,type Bar,type ExitReason} from './trend-replay.ts';
 
 const requestSchema=z.strictObject({experimentId:z.string(),version:z.number(),expected:z.unknown(),window:z.enum(['exploration','validation','evaluation'])});
 type Candle=ReturnType<typeof windowCandles>['candles'][number];
-type SkipReason='turnover_not_expanded'|'not_stronger_than_benchmark'|'max_positions'|'no_entry_candle';
+type SkipReason='turnover_not_expanded'|'not_stronger_than_benchmark'|'agent_veto'|'max_positions'|'no_entry_candle';
+/** Key of one candidate signal, as frozen in a registered agent veto. */
+export const vetoKey=(instId:string,signalOpenMs:number)=>`${instId}@${signalOpenMs}`;
 const toBar=(c:Candle):Bar=>({open:new Decimal(c.open),high:new Decimal(c.high),low:new Decimal(c.low),close:new Decimal(c.close)});
 
 /**
@@ -22,19 +24,23 @@ const toBar=(c:Candle):Bar=>({open:new Decimal(c.open),high:new Decimal(c.high),
 export function replayRelativeStrength(db:Db,registry:Registry,raw:unknown) {
  const request=parseReplayInput(requestSchema,raw);
  if(request.window==='evaluation') throw new DomainError('UNSUPPORTED_CAPABILITY','Evaluation window is sealed',[{ruleId:'experiment.evaluation_window_sealed'}]);
- const loaded=loadRegisteredExperiment(db,registry,request);
- const {registration,resolutionMs}=loaded, replay=registration.replay, selection=replay?.selection;
- const base={experimentId:request.experimentId,version:request.version,window:request.window,registrationSha256:registration.contentSha256,survivorshipGap:loaded.inspection.unknowns.includes('historical_universe_unknown'),status:'insufficient' as const,executionAuthorized:false as const};
+ return simulateRelativeStrength(db,loadRegisteredExperiment(db,registry,request),request.window,new Set());
+}
+
+/** The universe replay with the given candidate signals vetoed (skipped as `agent_veto` before ranking). */
+export function simulateRelativeStrength(db:Db,loaded:LoadedExperiment,name:WindowName,vetoed:Set<string>) {
+ const {registration,resolutionMs,request}=loaded, replay=registration.replay, selection=replay?.selection;
+ const base={experimentId:request.experimentId,version:request.version,window:name,registrationSha256:registration.contentSha256,survivorshipGap:loaded.inspection.unknowns.includes('historical_universe_unknown'),status:'insufficient' as const,executionAuthorized:false as const};
  const blocked=(reasonCode:'rules_incomplete'|'missing_required_evidence')=>({...base,outcome:'blocked' as const,reasonCode,trades:null,skips:[],metrics:null});
  if(!replay || !selection || !registration.universe) return blocked('rules_incomplete');
  // Relative strength needs the benchmark at every bar of the window.
- const benchmark=windowCandles(loaded,request.window).candles;
+ const benchmark=windowCandles(loaded,name).candles;
  if(!benchmark.length || benchmark.some((c,k)=>k>0 && c.ts!==benchmark[k-1]!.ts+resolutionMs)) return blocked('missing_required_evidence');
  const {rule,cost}=replay, qty=new Decimal(replay.market.baseQuantity);
  const members=registration.universe.instruments.map(({data})=>{
   const inspection=inspectBoundHistory(db,registration,data);
   const member={...loaded,inspection,manifest:getHistory(db,inspection.reference)!};
-  return {instId:data.scope.instId,byTs:new Map(windowCandles(member,request.window).candles.map(c=>[c.ts,c])),funding:fundingEventsFor(member,replay).fundingEvents ?? []};
+  return {instId:data.scope.instId,byTs:new Map(windowCandles(member,name).candles.map(c=>[c.ts,c])),funding:fundingEventsFor(member,replay).fundingEvents ?? []};
  });
  type Member=typeof members[number];
  type Position={member:Member;signalOpenMs:number;entryOpenMs:number;entry:Decimal;initialStop:Decimal;distance:Decimal;highest:Decimal;range:Decimal;last:Candle|null};
@@ -73,6 +79,7 @@ export function replayRelativeStrength(db:Db,registry:Registry,raw:unknown) {
    const growth=(now:string,then:string)=>new Decimal(now).div(then);
    const strength=growth(window[need]!.close,window[need-selection.strengthLookback]!.close).minus(growth(benchmark[k]!.close,benchmark[k-selection.strengthLookback]!.close));
    if(!strength.gt(0)){skips.push({instId:member.instId,signalOpenMs:ts,reason:'not_stronger_than_benchmark'});continue;}
+   if(vetoed.has(vetoKey(member.instId,ts))){skips.push({instId:member.instId,signalOpenMs:ts,reason:'agent_veto'});continue;}
    candidates.push({member,strength,bars});
   }
   candidates.sort((x,y)=>y.strength.comparedTo(x.strength) || (x.member.instId<y.member.instId ? -1 : 1));

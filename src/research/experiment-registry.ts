@@ -30,11 +30,14 @@ const schema=z.strictObject({experimentId:reference,version,attemptId:reference,
  evaluation:z.strictObject({metrics:text,thresholds:text,baseline:text,method:text}),
  replay:trendReplayConfigSchema.optional(),
  gates:evaluationGatesSchema.optional(),
- universe:universeSchema.optional()
+ universe:universeSchema.optional(),
+ // Agent vetoes of specific candidate signals, each tied to the research run that produced it.
+ agentVetoes:z.array(z.strictObject({instId:z.string().regex(/^[A-Z0-9]+-USDT(?:-SWAP)?$/),signalOpenMs:z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER),researchRunId:z.string().regex(/^run_[0-9a-f-]{36}$/)})).min(1).max(1000).optional()
 }).refine(v=>{const {exploration:a,validation:b,evaluation:c}=v.windows; const t=[a.start,a.end,b.start,b.end,c.start,c.end].map(Date.parse); return t.every(Number.isFinite) && t[0]!<t[1]! && t[1]!<=t[2]! && t[2]!<t[3]! && t[3]!<=t[4]! && t[4]!<t[5]!})
  .refine(v=>v.replay===undefined || (v.data.scope?.product===v.replay.market.product && fundingMatchesProduct(v.replay)))
  .refine(v=>v.gates===undefined || v.replay!==undefined)
  .refine(v=>!v.replay?.selection || v.universe!==undefined)
+ .refine(v=>!v.agentVetoes || (v.replay?.selection!==undefined && new Set(v.agentVetoes.map(x=>`${x.instId}@${x.signalOpenMs}`)).size===v.agentVetoes.length))
  // Universe members differ only by instrument, and regimes are ordered, non-overlapping periods.
  .refine(v=>!v.universe || (v.replay!==undefined && v.data.scope!==undefined
   && new Set(v.universe.instruments.map(i=>i.data.scope.instId)).size===v.universe.instruments.length
@@ -79,7 +82,7 @@ export function createExperimentRegistry(db:Db,now:()=>Date) {
  function parseStoredRow(row:Row):ExperimentRegistration {
   const parsed=JSON.parse(row.content) as ExperimentRegistration;
   const {contentSha256,...body}=parsed;
-  if(canonicalJson(parsed)!==row.content || contentSha256!==row.content_sha256 || sha256(canonicalJson(body))!==contentSha256 || parsed.experimentId!==row.experiment_id || parsed.version!==row.version || parsed.attemptId!==row.attempt_id || parsed.status!=='unvalidated' || parsed.dataAvailability!=='unverified' || parsed.executionAuthorized!==false || !((parsed.schemaVersion===1 && parsed.data?.scope===undefined && parsed.replay===undefined && parsed.gates===undefined && parsed.universe===undefined)||(parsed.schemaVersion===2 && parsed.data?.scope!==undefined && parsed.replay===undefined && parsed.gates===undefined && parsed.universe===undefined)||(parsed.schemaVersion===3 && parsed.data?.scope!==undefined && parsed.replay!==undefined))) fail();
+  if(canonicalJson(parsed)!==row.content || contentSha256!==row.content_sha256 || sha256(canonicalJson(body))!==contentSha256 || parsed.experimentId!==row.experiment_id || parsed.version!==row.version || parsed.attemptId!==row.attempt_id || parsed.status!=='unvalidated' || parsed.dataAvailability!=='unverified' || parsed.executionAuthorized!==false || !((parsed.schemaVersion===1 && parsed.data?.scope===undefined && parsed.replay===undefined && parsed.gates===undefined && parsed.universe===undefined && parsed.agentVetoes===undefined)||(parsed.schemaVersion===2 && parsed.data?.scope!==undefined && parsed.replay===undefined && parsed.gates===undefined && parsed.universe===undefined && parsed.agentVetoes===undefined)||(parsed.schemaVersion===3 && parsed.data?.scope!==undefined && parsed.replay!==undefined))) fail();
   const {schemaVersion,registeredAt,status,dataAvailability,executionAuthorized,...input}=body;
   const strategy=getRow<{content:string}>(db,'SELECT content FROM experiment_strategy_versions WHERE strategy_id=? AND version=?',input.strategy.id,input.strategy.version);
   if(!schema.safeParse(input).success || !Number.isFinite(Date.parse(registeredAt)) || !strategy || strategy.content!==canonicalJson(input.strategy)) fail();
