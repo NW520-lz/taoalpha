@@ -5,6 +5,7 @@ import { runCli, type CliDeps, type Envelope } from "../cli.ts";
 import { DomainError, type ErrorCode } from "../lib/errors.ts";
 import { createMethodRecord, getMethodRecord, getMethodContext, methodContextSchema, methodRecordSchema } from "../research/method-record.ts";
 import { completeTask, startResearch, getRun } from "../research/research-service.ts";
+import { recordJudgement } from "../research/regime-journal.ts";
 import type { ScanContent } from "../scan/scan.ts";
 import type { PublicError } from "../okx/public-client.ts";
 
@@ -24,6 +25,7 @@ const SAFE_RULES = new Set([
   "research.method_context_missing", "research.method_duplicate", "research.method_hash", "research.method_prior",
   "research.method_record_missing", "research.method_refs", "research.method_schema", "research.method_scope",
   "strategy.readable", "strategy.json",
+  "regime.schema", "regime.instrument", "regime.bundle_exists", "regime.run_decided", "regime.one_per_period", "regime.protocol_conflict",
   ...["invalid_type", "too_big", "too_small", "invalid_format", "not_multiple_of", "unrecognized_keys", "invalid_union", "invalid_key", "invalid_element", "invalid_value", "custom"]
     .flatMap((code) => [`schema.${code}`, `strategy.${code}`]),
 ]);
@@ -114,6 +116,12 @@ export function createResearchMcpServer(deps: CliDeps): McpServer {
     async ({recordId}) => ({ok:true,operation:"research method-get",mode:"M0_readonly_research",asOf:deps.now().toISOString(),value:getMethodRecord(deps.db,recordId),summaryZh:"方法记录未核验。"}));
   add("taoalpha_method_context", "research method-context", "读取冻结方法上下文。", z.object({runId:id("run")}).strict(), false,
     async ({runId}) => {getRun(deps.db,runId); return {ok:true,operation:"research method-context",mode:"M0_readonly_research",asOf:deps.now().toISOString(),value:getMethodContext(deps.db,runId),summaryZh:"冻结方法上下文。"};});
+
+  add("taoalpha_regime_record", "research regime-record", "追加一条未来 7 个 UTC 日的行情判断（只记录，不交易）；判断期由系统时钟决定，不能补记。",
+    z.object({ instId: z.string(), label: z.enum(["trend_up", "trend_down", "range", "unclear"]), reasons: z.array(z.string()).min(1).max(10), bundleId: id("bundle"), judge: z.string(), runId: id("run").optional() }).strict(), true,
+    async input => ({ok:true,operation:"research regime-record",mode:"M0_readonly_research",asOf:deps.now().toISOString(),value:recordJudgement(deps.db,input,deps.now),summaryZh:"行情判断已追加；不构成交易授权。"}));
+  add("taoalpha_regime_list", "research regime-list", "读取冻结的判断协议、全部行情判断和漏记缺口。", z.object({}).strict(), false,
+    () => runCli(["research","regime-list"],deps));
 
   // The SDK's default validation errors contain raw input diagnostics and lack structuredContent.
   // Its documented underlying server supports a handler that enforces the same published schemas safely.

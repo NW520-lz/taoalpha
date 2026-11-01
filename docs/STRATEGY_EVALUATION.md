@@ -83,3 +83,11 @@ CLI `research evaluation <experimentId> <version>` 和 MCP 工具 `taoalpha_rese
 一条否决只有在以下条件都满足时才生效：研究运行存在、已经得出综合结论，并且结论时间（`decidedAt`）与其证据包的创建时间都不晚于信号 K 线收盘。只有运行不存在时记为 `research_run_missing`；完整性或存储错误照常报错，不会被当成缺失。证据晚于信号的否决记为 `evidence_after_signal`，因为当时不可能知道这些信息。被否决的候选在排名前以 `agent_veto` 跳过，空出的仓位由下一个候选填补。
 
 当前研究证据包都采集于运行当时，没有历史时点的证据，因此对历史窗口的否决都会被拒绝，两组结果相同。这是如实结果，不代表 Agent 没有价值：真实对照需要先建立历史时点的研究证据。报告列出各研究运行的自报运行方式（`hostVerified` 恒为 false），并标明调用成本未记录、多个 Agent 报告不是统计独立样本。
+
+## Agent 每日行情判断记录
+
+由于历史否决无法使用当时的证据，Agent 判断的价值只能向前积累证据。`src/research/regime-journal.ts` 只记录、不交易：Agent 每天对冻结名单里的币种各写一条判断，标签为 `trend_up` / `trend_down` / `range` / `unclear`，并附理由、证据包引用和自报的判断者；可选引用一个已得出结论的多 Agent 研究运行。判断期由系统时钟决定，固定为记录时刻之后下一个 UTC 0 点起的 7 天，因此不能补记，也不能在判断期开始后才写。同一协议、币种和判断期只保留一条：内容相同的重复提交返回原记录，内容不同报 `IDEMPOTENCY_CONFLICT`。记录表与协议表都只能追加。
+
+协议 v1（用户 2026-11-01 确认）在第一条判断写入时冻结进数据库，内容包括：币种 BTC-USDT、ETH-USDT 现货；期限 7 天；打分用 UTC 日线效率比 ER = |C7−C0| / Σ|Ci−Ci−1|，ER ≥ 0.5 记为趋势（按方向分涨跌），ER ≤ 0.3 记为震荡，二者之间记为模糊，不计入命中率；`unclear` 视为弃权，单独报告覆盖率；每个币种至少 30 个已打分判断期；对照组为"总是猜震荡"、"沿用上一期实际结果"和"过去一年最常见的结果"。数据库里已保存的协议内容与代码不一致时，拒绝写入新的判断。
+
+入口：CLI `research regime-record --file <judgement.json>` 和 `research regime-list`，MCP 工具 `taoalpha_regime_record` 与只读的 `taoalpha_regime_list`。列表同时返回冻结协议、全部判断，以及第一期到最后一期之间每个币种漏记的判断期。打分报告属于工单 16，尚未实现。判断者身份为自报（`judgeVerified: false`），所有记录都是 `executable: false`。

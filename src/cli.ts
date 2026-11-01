@@ -1,4 +1,5 @@
 import { getFinalEvaluation, isRegistered } from "./research/final-evaluation.ts";
+import { getRegimeProtocol, listJudgements, recordJudgement } from "./research/regime-journal.ts";
 import { createMethodRecord, getMethodRecord, getMethodContext, type MethodContextInput } from "./research/method-record.ts";
 import { readFileSync } from "node:fs";
 import { parseArgs } from "node:util";
@@ -47,7 +48,7 @@ const USAGE =
   "research start --bundle <id> --agent-mode <parallel_independent|serial_degraded> | research tasks <runId> | " +
   "research submit <assignmentId> (--file <report.json> | --failed <reason>) | research get <runId> | " +
   "research method-context <runId> | research method-create --file <record.json> | research method-get <recordId> | research conflicts <runId> | " +
-  "research evaluation <experimentId> <version>";
+  "research evaluation <experimentId> <version> | research regime-record --file <judgement.json> | research regime-list";
 
 const STATUS_ZH: Record<ResearchRunView["status"], string> = {
   independent_research: "独立研究",
@@ -207,6 +208,16 @@ async function research(args: string[], deps: CliDeps): Promise<Output> {
       const file = stringOption(values,"file"); if (!file || positionals.length) throw usageError("method-create requires --file");
       const value = createMethodRecord(deps.db, readJson(file), deps.now);
       return {value, summaryZh:"方法记录已追加；论断未核验，不可执行。"};
+    }
+    case "regime-record": {
+      const {values, positionals} = parse(rest, {file:{type:"string"}});
+      const file = stringOption(values,"file"); if (!file || positionals.length) throw usageError("regime-record requires --file");
+      return {value:recordJudgement(deps.db, readJson(file), deps.now), summaryZh:"行情判断已追加；只作事后打分，不构成交易授权。"};
+    }
+    case "regime-list": {
+      const {positionals}=parse(rest,{}); if(positionals.length) throw usageError("regime-list takes no arguments");
+      const {judgements, missing}=listJudgements(deps.db);
+      return {value:{protocol:getRegimeProtocol(deps.db), judgements, missing}, summaryZh:`行情判断 ${judgements.length} 条，缺口 ${missing.length} 个；未打分，不构成交易授权。`};
     }
     case "method-get": {
       const {positionals}=parse(rest,{}); if(positionals.length!==1 || !positionals[0]) throw usageError("method-get requires an id");
