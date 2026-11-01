@@ -4,13 +4,13 @@ import {DomainError} from '../lib/errors.ts';
 import {BARS,getHistory} from '../market/history.ts';
 import type {Db} from '../store/db.ts';
 import {inspectExperimentHistory} from './experiment-history.ts';
-import type {createExperimentRegistry} from './experiment-registry.ts';
+import type {createExperimentRegistry,ExperimentRegistration} from './experiment-registry.ts';
 import {parseReplayInput} from './research-evaluation.ts';
 import {replayTrendCandles} from './trend-replay.ts';
 
 // Scope and identifiers are validated by inspectExperimentHistory; this only fixes the request shape.
 const requestSchema=z.strictObject({experimentId:z.string(),version:z.number(),expected:z.unknown(),window:z.enum(['exploration','validation','evaluation'])});
-type Registry=Pick<ReturnType<typeof createExperimentRegistry>,'get'>;
+export type Registry=Pick<ReturnType<typeof createExperimentRegistry>,'get'>;
 type Segment={endsAt:'window_end'|'data_gap';result:ReturnType<typeof replayTrendCandles>};
 
 // Ratios and averages may not terminate; they are rounded half-even to 10 decimal places.
@@ -46,27 +46,30 @@ function windowMetrics(segments:Segment[]) {
  };
 }
 
-/**
- * Replays a registered experiment with only its frozen parameters, on only the candles of one
- * registered window of its bound history manifest. Read-only; never validates a strategy.
- */
-export function replayRegisteredExperiment(db:Db,registry:Registry,raw:unknown) {
- const request=parseReplayInput(requestSchema,raw);
- // The final window may be looked at exactly once; that needs the persisted run-once report (slice #3).
- if(request.window==='evaluation') throw new DomainError('UNSUPPORTED_CAPABILITY','Evaluation window is sealed',[{ruleId:'experiment.evaluation_window_sealed'}]);
+type Request={experimentId:string;version:number;expected:unknown};
+export type WindowName='exploration'|'validation'|'evaluation';
+export type TrendReplay=NonNullable<ExperimentRegistration['replay']>;
+
+/** Verified registration plus its bound manifest. Internal: callers own any window-access policy. */
+export function loadRegisteredExperiment(db:Db,registry:Registry,request:Request) {
  const inspection=inspectExperimentHistory(db,registry,{experimentId:request.experimentId,version:request.version,expected:request.expected});
  const registration=registry.get(request.experimentId,request.version)!;
  const manifest=getHistory(db,inspection.reference)!;
- const window=registration.windows[request.window];
+ return {request,inspection,registration,manifest,resolutionMs:BARS[manifest.request.resolution]};
+}
+export type LoadedExperiment=ReturnType<typeof loadRegisteredExperiment>;
+
+/** Replays one registered window with the given parameters (the registered ones unless overridden). */
+export function replayWindow(loaded:LoadedExperiment,name:WindowName,replay:TrendReplay|undefined=loaded.registration.replay) {
+ const {inspection,registration,manifest,resolutionMs,request}=loaded;
+ const window=registration.windows[name];
  const range={start:Date.parse(window.start),end:Date.parse(window.end)};
- const base={experimentId:request.experimentId,version:request.version,registrationSha256:registration.contentSha256,scopeBinding:inspection.expectedScopeBinding,history:{reference:inspection.reference,sha256:inspection.sha256},window:request.window,range,status:'insufficient' as const,executionAuthorized:false as const,unknowns:inspection.unknowns};
+ const base={experimentId:request.experimentId,version:request.version,registrationSha256:registration.contentSha256,scopeBinding:inspection.expectedScopeBinding,history:{reference:inspection.reference,sha256:inspection.sha256},window:name,range,status:'insufficient' as const,executionAuthorized:false as const,unknowns:inspection.unknowns};
  // Prose rules are never interpreted into numbers; only frozen structured parameters run.
- if(!registration.replay) return {...base,outcome:'blocked' as const,reasonCode:'rules_incomplete' as const,segments:[],metrics:null};
- const replay=registration.replay;
- const resolutionMs=BARS[manifest.request.resolution];
+ if(!replay) return {...base,outcome:'blocked' as const,reasonCode:'rules_incomplete' as const,segments:[],metrics:null};
  const inWindow=manifest.candles.filter(c=>c.ts>=range.start && c.closeTime<=range.end);
- // A missing candle splits the window; no position or signal is carried across a gap.
  if(!inWindow.length) return {...base,outcome:'blocked' as const,reasonCode:'missing_required_evidence' as const,segments:[],metrics:null};
+ // A missing candle splits the window; no position or signal is carried across a gap.
  const pieces:typeof inWindow[]=[];
  for(const c of inWindow) {
   const last=pieces.at(-1)?.at(-1);
@@ -82,4 +85,15 @@ export function replayRegisteredExperiment(db:Db,registry:Registry,raw:unknown) 
   return {firstOpenMs:candles[0]!.ts,lastCloseMs:candles.at(-1)!.closeTime,candles:candles.length,startsAt,endsAt,openAtGap,result};
  });
  return {...base,outcome:'replayed' as const,reasonCode:null,segments,metrics:windowMetrics(segments)};
+}
+
+/**
+ * Replays a registered experiment with only its frozen parameters, on only the candles of one
+ * registered window of its bound history manifest. Read-only; never validates a strategy.
+ */
+export function replayRegisteredExperiment(db:Db,registry:Registry,raw:unknown) {
+ const request=parseReplayInput(requestSchema,raw);
+ // The final window may be looked at exactly once, only through the run-once evaluation report.
+ if(request.window==='evaluation') throw new DomainError('UNSUPPORTED_CAPABILITY','Evaluation window is sealed',[{ruleId:'experiment.evaluation_window_sealed'}]);
+ return replayWindow(loadRegisteredExperiment(db,registry,request),request.window);
 }

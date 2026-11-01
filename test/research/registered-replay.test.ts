@@ -1,32 +1,8 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
-import {openDb} from '../../src/store/db.ts';
-import {collectHistory,saveHistory} from '../../src/market/history.ts';
-import {createExperimentRegistry} from '../../src/research/experiment-registry.ts';
 import {replayRegisteredExperiment} from '../../src/research/registered-replay.ts';
-import type {PublicClient} from '../../src/okx/public-client.ts';
 import {expectDomainError} from '../helpers/assertions.ts';
-
-const H=3600000;
-const now=()=>new Date('2026-01-01T00:00:00.000Z');
-// Same hand-worked trend as trend-replay.test.ts (bars 0-5), then a later breakout at bar 7.
-const ohlc=[[100,101,99,100],[100,101,99,100],[100,104,100,104],[105,110,104,109],[109,115,108,114],[114,116,110,111],[111,112,110,111],[111,118,111,117],[118,119,117,118],[118,119,117,118],[118,119,117,118],[118,119,117,118]];
-const expected={site:'global',instId:'BTC-USDT',product:'spot',resolution:'1H'} as const;
-const replay={market:{product:'spot',quote:'USDT',baseQuantity:'2'},rule:{kind:'breakout_atr_trailing',breakoutLookback:2,atrPeriod:2,initialStopAtr:'2',trailingStopAtr:'1.5'},cost:{entryFeePpm:1000,exitFeePpm:1000,entryImpactPpm:2000,exitImpactPpm:2000,funding:'not_applicable'}};
-
-async function setup(omit:number[]=[],bars:number[][]=ohlc) {
- const rows=bars.map((p,i)=>[String(i*H),...p.map(String),'1','100','100','1']).filter((_,i)=>!omit.includes(i)).reverse();
- const pages=[rows,[]];
- const client:PublicClient={site:'global',async get<T>(path:string,query:Record<string,string>){
-  const data=(pages.shift() ?? []) as T[]; const endpoint=path+'?'+new URLSearchParams(query);
-  return {ok:true as const,endpoint,rows:data,raw:{endpoint,receivedAt:'1970-01-02T00:00:00.000Z',status:200,body:JSON.stringify({code:'0',data})}};
- }};
- const db=openDb(':memory:'); const registry=createExperimentRegistry(db,now);
- const manifest=await collectHistory(client,{instId:'BTC-USDT',product:'spot',resolution:'1H',start:0,end:12*H,asOf:12*H,limit:100,maxPages:2,capturedAt:'1970-01-02T00:00:00.000Z'});
- const id=saveHistory(db,manifest);
- const input={experimentId:'experiment:trend',version:1,attemptId:'attempt:trend:1',strategy:{id:'strategy:trend',version:1,entryRules:'close above prior highs',exitRules:'ATR initial and trailing stop',invalidationRules:'stop'},data:{reference:id,sha256:id.slice(8),version:manifest.parsingVersion,scope:expected},code:{reference:'code:trend',sha256:'b'.repeat(64),version:'v1'},costs:{fees:'10 bps per side',spread:'in impact',slippage:'20 bps per side',funding:'not applicable',execution:'next open'},windows:{exploration:{start:'1970-01-01T00:00:00Z',end:'1970-01-01T06:00:00Z'},validation:{start:'1970-01-01T06:00:00Z',end:'1970-01-01T09:00:00Z'},evaluation:{start:'1970-01-01T09:00:00Z',end:'1970-01-01T12:00:00Z'}},evaluation:{metrics:'net',thresholds:'positive',baseline:'hold',method:'replay'},replay};
- return {db,registry,manifest,input};
-}
+import {H,ohlc,expected,replay,setup} from '../helpers/experiment-fixtures.ts';
 
 test('structured replay parameters are frozen into the registration and cannot change within a version',async()=>{
  const {db,registry,input}=await setup();try {

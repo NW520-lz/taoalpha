@@ -3,6 +3,7 @@ import { parseConfirmationProposal } from '../control/confirmation-schema.ts';
 import { DomainError } from '../lib/errors.ts';
 import { canonicalJson, sha256 } from '../lib/hash.ts';
 import { getRow, inTransaction, type Db } from '../store/db.ts';
+import { evaluationGatesSchema } from './gates.ts';
 import { trendReplayConfigSchema } from './trend-replay.ts';
 
 const reference=z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/);
@@ -20,9 +21,11 @@ const schema=z.strictObject({experimentId:reference,version,attemptId:reference,
  costs:z.strictObject({fees:text,spread:text,slippage:text,funding:text,execution:text}),
  windows:z.strictObject({exploration:window,validation:window,evaluation:window}),
  evaluation:z.strictObject({metrics:text,thresholds:text,baseline:text,method:text}),
- replay:trendReplayConfigSchema.optional()
+ replay:trendReplayConfigSchema.optional(),
+ gates:evaluationGatesSchema.optional()
 }).refine(v=>{const {exploration:a,validation:b,evaluation:c}=v.windows; const t=[a.start,a.end,b.start,b.end,c.start,c.end].map(Date.parse); return t.every(Number.isFinite) && t[0]!<t[1]! && t[1]!<=t[2]! && t[2]!<t[3]! && t[3]!<=t[4]! && t[4]!<t[5]!})
- .refine(v=>v.replay===undefined || v.data.scope?.product===v.replay.market.product);
+ .refine(v=>v.replay===undefined || v.data.scope?.product===v.replay.market.product)
+ .refine(v=>v.gates===undefined || v.replay!==undefined);
 type Input=z.infer<typeof schema>;
 export type ExperimentRegistration=Input & {schemaVersion:1|2|3;registeredAt:string;contentSha256:string;status:'unvalidated';dataAvailability:'unverified';executionAuthorized:false};
 interface Row {experiment_id:string;version:number;attempt_id:string;content:string;content_sha256:string}
@@ -58,7 +61,7 @@ export function createExperimentRegistry(db:Db,now:()=>Date) {
  function parseStoredRow(row:Row):ExperimentRegistration {
   const parsed=JSON.parse(row.content) as ExperimentRegistration;
   const {contentSha256,...body}=parsed;
-  if(canonicalJson(parsed)!==row.content || contentSha256!==row.content_sha256 || sha256(canonicalJson(body))!==contentSha256 || parsed.experimentId!==row.experiment_id || parsed.version!==row.version || parsed.attemptId!==row.attempt_id || parsed.status!=='unvalidated' || parsed.dataAvailability!=='unverified' || parsed.executionAuthorized!==false || !((parsed.schemaVersion===1 && parsed.data?.scope===undefined && parsed.replay===undefined)||(parsed.schemaVersion===2 && parsed.data?.scope!==undefined && parsed.replay===undefined)||(parsed.schemaVersion===3 && parsed.data?.scope!==undefined && parsed.replay!==undefined))) fail();
+  if(canonicalJson(parsed)!==row.content || contentSha256!==row.content_sha256 || sha256(canonicalJson(body))!==contentSha256 || parsed.experimentId!==row.experiment_id || parsed.version!==row.version || parsed.attemptId!==row.attempt_id || parsed.status!=='unvalidated' || parsed.dataAvailability!=='unverified' || parsed.executionAuthorized!==false || !((parsed.schemaVersion===1 && parsed.data?.scope===undefined && parsed.replay===undefined && parsed.gates===undefined)||(parsed.schemaVersion===2 && parsed.data?.scope!==undefined && parsed.replay===undefined && parsed.gates===undefined)||(parsed.schemaVersion===3 && parsed.data?.scope!==undefined && parsed.replay!==undefined))) fail();
   const {schemaVersion,registeredAt,status,dataAvailability,executionAuthorized,...input}=body;
   const strategy=getRow<{content:string}>(db,'SELECT content FROM experiment_strategy_versions WHERE strategy_id=? AND version=?',input.strategy.id,input.strategy.version);
   if(!schema.safeParse(input).success || !Number.isFinite(Date.parse(registeredAt)) || !strategy || strategy.content!==canonicalJson(input.strategy)) fail();
@@ -76,7 +79,7 @@ export function createExperimentRegistry(db:Db,now:()=>Date) {
    if(priorStrategy && priorStrategy.content!==strategyContent) fail('IDEMPOTENCY_CONFLICT');
    if(!priorStrategy) db.prepare('INSERT INTO experiment_strategy_versions VALUES(?,?,?)').run(input.strategy.id,input.strategy.version,strategyContent);
    const date=now(); if(!(date instanceof Date)||!Number.isFinite(date.getTime())) fail();
-   // Schema 3 = schema 2 plus machine-readable replay parameters bound into the content hash.
+   // Schema 3 = schema 2 plus machine-readable replay parameters (and optional gates) bound into the content hash.
    const body={...input,schemaVersion:input.replay ? 3 as const : 2 as const,registeredAt:date.toISOString(),status:'unvalidated' as const,dataAvailability:'unverified' as const,executionAuthorized:false as const};
    const record={...body,contentSha256:sha256(canonicalJson(body))};
    db.prepare('INSERT INTO experiment_preregistrations VALUES(?,?,?,?,?)').run(input.experimentId,input.version,input.attemptId,canonicalJson(record),record.contentSha256);
