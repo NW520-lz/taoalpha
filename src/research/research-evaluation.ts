@@ -25,7 +25,8 @@ function plainJson(input:unknown,ancestors=new Set<object>(),depth=0):void {
  }
  ancestors.delete(input);
 }
-function value<T>(schema:z.ZodType<T>,input:unknown):T {
+/** Rejects non-plain JSON (getters, prototypes, deep nesting) before schema parsing; never echoes input. */
+export function parseReplayInput<T>(schema:z.ZodType<T>,input:unknown):T {
  try {plainJson(input);const v=schema.safeParse(input);return v.success?v.data:invalid();} catch {return invalid();}
 }
 
@@ -44,7 +45,7 @@ function calculate(quantity:string,entry:string,exit:string,entryFee:number,exit
  * an accepted historical result or grants a trading permission.
  */
 export function replayObservedMarks(raw:unknown) {
- const input=value(replaySchema,raw);
+ const input=parseReplayInput(replaySchema,raw);
  let previousAvailable:number|null=null;
  for(let i=0;i<input.marks.length;i++) {
   const m=input.marks[i]!;
@@ -76,7 +77,7 @@ export function replayObservedMarks(raw:unknown) {
 const fixtureSchema=z.object({schemaVersion:z.literal(1),provenance:z.literal('synthetic_fixture'),instrument:z.object({product:z.literal('spot'),quote:z.literal('USDT'),quantityUnit:z.literal('base_atoms_1e-8'),priceUnit:z.literal('usdt_micro')}).strict(),rule:z.object({kind:z.literal('close_above_reference'),referencePriceMicro:positiveInteger}).strict(),signal:z.object({closeTimeMs:timestamp,availableAtMs:timestamp,closePriceMicro:positiveInteger}).strict(),entry:z.object({timeMs:timestamp,priceAvailableAtMs:timestamp,priceMicro:positiveInteger}).strict(),exit:z.object({timeMs:timestamp,priceAvailableAtMs:timestamp,priceMicro:positiveInteger}).strict(),quantityBaseAtoms:positiveInteger,cost:z.object({priceIncludesSpreadAndSlippage:z.literal(true),entryFeePpm:ppm,exitFeePpm:ppm,funding:z.literal('not_applicable')}).strict()}).strict();
 /** Compatibility helper for isolated synthetic arithmetic checks, never an evaluation gate. */
 export function evaluateSyntheticFixture(raw:unknown) {
- const f=value(fixtureSchema,raw);
+ const f=parseReplayInput(fixtureSchema,raw);
  if(f.signal.availableAtMs<f.signal.closeTimeMs || f.signal.availableAtMs>=f.entry.timeMs || f.entry.priceAvailableAtMs>f.entry.timeMs || f.exit.priceAvailableAtMs>f.exit.timeMs || f.exit.timeMs<=f.entry.timeMs) invalid();
  if(BigInt(f.signal.closePriceMicro)<=BigInt(f.rule.referencePriceMicro)) return {outcome:'no_signal' as const,netUsdtE20:null,status:'unvalidated' as const,executionAuthorized:false as const};
  const {impactUsdtE20,...amounts}=calculate(f.quantityBaseAtoms,f.entry.priceMicro,f.exit.priceMicro,f.cost.entryFeePpm,f.cost.exitFeePpm,0,0);

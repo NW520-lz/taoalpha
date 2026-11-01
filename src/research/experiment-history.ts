@@ -21,8 +21,8 @@ export function inspectExperimentHistory(db:Db,registry:Pick<ReturnType<typeof c
   try {
    const registration=registry.get(experimentId,version); if(!registration) fail();
    const data=registration.data;
-   const frozenScope=registration.schemaVersion===2 ? data.scope : undefined;
-   if(registration.schemaVersion===2 && (!frozenScope || hashJson(frozenScope)!==hashJson(expected))) fail();
+   const frozenScope=registration.schemaVersion>=2 ? data.scope : undefined;
+   if(registration.schemaVersion>=2 && (!frozenScope || hashJson(frozenScope)!==hashJson(expected))) fail();
    if(!/^history_[a-f0-9]{64}$/.test(data.reference) || data.reference!==`history_${data.sha256}` || !db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='history_manifests'").get()) fail();
    let rawManifest:ReturnType<typeof getHistory>;
    try { rawManifest=getHistory(db,data.reference); } catch { return fail('PERSISTENCE_UNAVAILABLE'); }

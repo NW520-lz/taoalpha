@@ -3,7 +3,7 @@ import { dec, isDecimalString } from '../lib/decimal.ts';
 import { canonicalJson, hashJson, sha256 } from '../lib/hash.ts';
 import { inTransaction, type Db } from '../store/db.ts';
 
-const BARS = { '1m':60000,'5m':300000,'15m':900000,'1H':3600000,'4H':14400000,'1Dutc':86400000 } as const;
+export const BARS = { '1m':60000,'5m':300000,'15m':900000,'1H':3600000,'4H':14400000,'1Dutc':86400000 } as const;
 type Resolution = keyof typeof BARS;
 export interface HistoryOptions { instId:string; product:'spot'|'usdt_perpetual'; resolution:Resolution; start:number; end:number; asOf:number; limit:number; maxPages:number; capturedAt:string; attemptId?:string; predecessorRef?:string; experimentRef?:string }
 type Volume = { vol:string; volCcy:string; volCcyQuote:string; units:{vol:'base'|'contracts';volCcy:'quote'|'base';volCcyQuote:'quote'} };
