@@ -58,7 +58,7 @@ test('after a stop-out a later breakout re-enters, and positions never overlap',
 test('results stay research-only and disclose assumptions, missing evidence and an input-bound hash',()=>{
  const result=replayTrendCandles(base);
  assert.equal(result.status,'insufficient');assert.equal(result.executionAuthorized,false);
- assert.equal(result.engineVersion,'breakout-atr-trailing-v1');
+ assert.equal(result.engineVersion,'breakout-atr-trailing-v2');
  for(const item of ['verified_historical_availability','registered_executable_rules','historical_universe','realistic_fill_and_cost_evidence']) assert.ok(result.missing.includes(item));
  for(const item of ['entry_at_next_open','stop_uses_prior_completed_bar_extremes','gap_fills_at_open','end_of_data_marked_at_last_close']) assert.ok(result.assumptions.includes(item));
  assert.match(result.inputSha256,/^[a-f0-9]{64}$/);

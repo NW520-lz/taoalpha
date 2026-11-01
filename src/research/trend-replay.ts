@@ -46,13 +46,15 @@ type FundingEvent=z.infer<typeof fundingEvent>;
 
 /**
  * Long funding over settlements strictly inside (fromTs, toTs), each on the quantity's notional at the
- * close of the last candle completed by that settlement. Positive is paid, negative received.
+ * close of the last candle completed by that settlement, or the open of the bar it falls in when none has
+ * closed yet. Positive is paid, negative received.
  */
-export function fundingCost(qty:Decimal,candles:Array<{closeTime:number;close:string}>,events:FundingEvent[],fromTs:number,toTs:number):Decimal {
+export function fundingCost(qty:Decimal,candles:Array<{ts:number;closeTime:number;open:string;close:string}>,events:FundingEvent[],fromTs:number,toTs:number):Decimal {
  let funding=new Decimal(0);
  for(const e of events) if(e.fundingTime>fromTs && e.fundingTime<toTs) {
-  const marked=candles.findLast(c=>c.closeTime<=e.fundingTime)!;
-  funding=funding.plus(qty.times(marked.close).times(e.realizedRate));
+  const closed=candles.findLast(c=>c.closeTime<=e.fundingTime);
+  const price=closed ? closed.close : candles.find(c=>c.ts<=e.fundingTime)!.open;
+  funding=funding.plus(qty.times(price).times(e.realizedRate));
  }
  return funding;
 }
@@ -107,5 +109,5 @@ export function replayTrendCandles(raw:unknown) {
  const assumptions=['entry_at_next_open','stop_uses_prior_completed_bar_extremes','gap_fills_at_open','end_of_data_marked_at_last_close','fees_and_impact_on_notional_once_per_side',...(perpetual ? ['funding_on_prior_close_notional_until_exit_bar_close','quantity_in_base_coin_not_contracts'] : [])];
  // Public funding history is short and has no verified cadence, so coverage is never claimed complete.
  const missing=[...assessHistoricalReadiness().missing,...(perpetual ? ['funding_coverage_unknown'] : [])];
- return {schemaVersion:1 as const,engineVersion:'breakout-atr-trailing-v1',inputSha256:hashJson(input),status:'insufficient' as const,executionAuthorized:false as const,resultKind:'hypothetical_candles' as const,unit,assumptions,missing,skips,hypotheticalTrades:trades};
+ return {schemaVersion:1 as const,engineVersion:'breakout-atr-trailing-v2',inputSha256:hashJson(input),status:'insufficient' as const,executionAuthorized:false as const,resultKind:'hypothetical_candles' as const,unit,assumptions,missing,skips,hypotheticalTrades:trades};
 }

@@ -34,7 +34,7 @@ export function judgeUniverse(members:ReturnType<typeof replayUniverse>,regimes:
  const rule=gates.multiInstrument!;
  if(new Decimal(groups.filter(g=>positive(g.metrics)).length).div(groups.length).lt(rule.minPositiveGroupShare)) failed.push('positive_group_share_below_minimum');
  if(byRegime.filter(r=>positive(r.metrics)).length<rule.minPositiveRegimes) failed.push('positive_regimes_below_minimum');
- const universeGate=failed.length ? 'failed' as const : insufficient.length ? 'insufficient' as const : 'met' as const;
+ const universeGate=insufficient.length ? 'insufficient' as const : failed.length ? 'failed' as const : 'met' as const;
  return {instruments:members.map(({instId,group,metrics})=>({instId,group,metrics})),total,groups,regimes:byRegime,universeGate,reasons:[...failed,...insufficient]};
 }
 

@@ -37,15 +37,17 @@ const schema=z.strictObject({experimentId:reference,version,attemptId:reference,
  .refine(v=>v.replay===undefined || (v.data.scope?.product===v.replay.market.product && fundingMatchesProduct(v.replay)))
  .refine(v=>v.gates===undefined || v.replay!==undefined)
  .refine(v=>!v.replay?.selection || v.universe!==undefined)
+ // A required count of positive regimes needs that many registered regimes.
+ .refine(v=>!v.gates?.multiInstrument || (v.universe?.regimes?.length ?? 0)>=v.gates.multiInstrument.minPositiveRegimes)
  .refine(v=>!v.agentVetoes || (v.replay?.selection!==undefined && new Set(v.agentVetoes.map(x=>`${x.instId}@${x.signalOpenMs}`)).size===v.agentVetoes.length))
  // Universe members differ only by instrument, and regimes are ordered, non-overlapping periods.
  .refine(v=>!v.universe || (v.replay!==undefined && v.data.scope!==undefined
   && new Set(v.universe.instruments.map(i=>i.data.scope.instId)).size===v.universe.instruments.length
   && v.universe.instruments.every(i=>i.data.scope.site===v.data.scope!.site && i.data.scope.product===v.data.scope!.product && i.data.scope.resolution===v.data.scope!.resolution)
   && (v.universe.regimes ?? []).every((r,k,all)=>Date.parse(r.start)<Date.parse(r.end) && (k===0 || Date.parse(all[k-1]!.end)<=Date.parse(r.start)))))
- // Stressed costs must stay a valid share of notional (at most 100% per side).
  // Every sensitivity neighbourhood is centred on the registered parameter value.
  .refine(v=>!v.gates?.sensitivity || !v.replay || Object.entries(v.gates.sensitivity.neighbourhoods).every(([key,values])=>{const registered=v.replay!.rule[key as 'atrPeriod'];return (values as Array<number|string>).some(x=>typeof x==='number' ? x===registered : dec(x).eq(String(registered)));}))
+ // Stressed costs must stay a valid share of notional (at most 100% per side).
  .refine(v=>!v.gates?.costStressMultipliers || !v.replay || Math.max(...Object.values(v.replay.cost).filter((c):c is number=>typeof c==='number'))*Math.max(...v.gates.costStressMultipliers)<=1000000);
 type Input=z.infer<typeof schema>;
 export type ExperimentRegistration=Input & {schemaVersion:1|2|3;registeredAt:string;contentSha256:string;status:'unvalidated';dataAvailability:'unverified';executionAuthorized:false};

@@ -11,13 +11,15 @@ import {getRun,type ResearchRunView} from './research-service.ts';
 const requestSchema=z.strictObject({experimentId:z.string(),version:z.number(),expected:z.unknown(),window:z.enum(['exploration','validation','evaluation'])});
 type Rejection='research_run_missing'|'research_unfinished'|'evidence_after_signal';
 
+// Only an unknown run counts as missing; integrity or storage failures propagate.
 function findRun(db:Db,runId:string):ResearchRunView|null {
- try { return getRun(db,runId); } catch(error) { if(error instanceof DomainError) return null; throw error; }
+ try { return getRun(db,runId); }
+ catch(error) { if(error instanceof DomainError && error.violations.some(v=>v.ruleId==='research.run_exists')) return null; throw error; }
 }
 
 /**
  * Compares the registered universe replay with and without its frozen agent vetoes. A veto applies only
- * when its research run finished and both the run and its evidence bundle existed by the signal's close;
+ * when its research run decided and both that decision and its evidence bundle existed by the signal's close;
  * evidence gathered later could not have informed that decision. Agent counts and confidence are never
  * treated as win rates, and the host's way of running agents stays unverified.
  */
@@ -36,7 +38,8 @@ export function compareAgentVeto(db:Db,registry:Registry,raw:unknown) {
   if(!run){rejected.push({...veto,reason:'research_run_missing'});continue;}
   runs.set(run.runId,run);
   if(!run.decision){rejected.push({...veto,reason:'research_unfinished'});continue;}
-  const knownAt=Math.max(Date.parse(run.createdAt),Date.parse(getBundle(db,run.bundleId)!.createdAt));
+  // The veto exists only once the run decided; its evidence bundle must also predate the signal.
+  const knownAt=Math.max(Date.parse(run.decision.decidedAt),Date.parse(getBundle(db,run.bundleId)!.createdAt));
   if(knownAt>veto.signalOpenMs+resolutionMs){rejected.push({...veto,reason:'evidence_after_signal'});continue;}
   applied.push(veto);
  }

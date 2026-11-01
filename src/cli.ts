@@ -1,4 +1,4 @@
-import { getFinalEvaluation } from "./research/final-evaluation.ts";
+import { getFinalEvaluation, isRegistered } from "./research/final-evaluation.ts";
 import { createMethodRecord, getMethodRecord, getMethodContext, type MethodContextInput } from "./research/method-record.ts";
 import { readFileSync } from "node:fs";
 import { parseArgs } from "node:util";
@@ -175,8 +175,9 @@ async function research(args: string[], deps: CliDeps): Promise<Output> {
       const version = /^[1-9]\d{0,14}$/.test(positionals[1] ?? "") ? Number(positionals[1]) : undefined;
       if (positionals.length !== 2 || !positionals[0] || version === undefined) throw usageError("research evaluation requires <experimentId> <version>");
       const report = getFinalEvaluation(deps.db, positionals[0], version);
-      return { value: { experimentId: positionals[0], version, state: report ? "evaluated" : "no_report", report },
-        summaryZh: report ? `最终评价报告：${report.status}；仅历史回放范围，不构成模拟或实盘准入。` : "该实验版本没有最终评价报告（未登记或尚未评价）；本命令不会运行评价。" };
+      const state = report ? "evaluated" : isRegistered(deps.db, positionals[0], version) ? "no_report" : "not_registered";
+      return { value: { experimentId: positionals[0], version, state, report },
+        summaryZh: report ? `最终评价报告：${report.status}；仅历史回放范围，不构成模拟或实盘准入。` : state === "no_report" ? "该实验版本已登记但尚未评价；本命令不会运行评价。" : "该实验版本未登记。" };
     }
     case "conflicts": {
       const {positionals}=parse(rest,{}); if(positionals.length!==1 || !positionals[0]) throw usageError("research conflicts requires a run id");

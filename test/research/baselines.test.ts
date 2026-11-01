@@ -40,3 +40,12 @@ test('a perpetual hold baseline pays the same funding settlements',async()=>{
   assert.deepEqual([result.hold!.fundingUsdt,result.hold!.netUsdt],['0.104','20.63']);
  }finally{db.close()}
 });
+
+test('a perpetual settlement inside the first window bar is marked at the entry open instead of crashing',async()=>{
+ const {db,registry,input,scope}=await setup([],undefined,{funding:[{fundingTime:H/2,realizedRate:'0.001'}]});try {
+  registry.register({...input,gates});
+  // Nothing has closed yet at 00:30, so the hold's notional is its entry open: 2*100*0.001.
+  const result=compareWithBaselines(db,registry,{...request,expected:scope});
+  assert.deepEqual([result.hold!.fundingUsdt,result.hold!.netUsdt],['0.2','20.534']);
+ }finally{db.close()}
+});

@@ -28,8 +28,8 @@ test('the CLI reads a stored final report and never runs one',async()=>{
   const missing=await runCli(['research','evaluation','experiment:trend','2'],deps);
   assert.deepEqual([missing.ok,(missing.value as {state:string}).state,(missing.value as {report:unknown}).report],[true,'no_report',null]);
   assert.equal(reports(deps),1);
-  const later=await runCli(['research','evaluation','experiment:trend','12'],deps);
-  assert.deepEqual([later.ok,(later.value as {state:string}).state],[true,'no_report']);
+  const unregistered=await runCli(['research','evaluation','experiment:trend','12'],deps);
+  assert.deepEqual([unregistered.ok,(unregistered.value as {state:string}).state],[true,'not_registered']);
   const bad=await runCli(['research','evaluation','experiment:trend','zero'],deps);
   assert.equal(bad.ok,false);
  }finally{deps.db.close()}

@@ -13,13 +13,13 @@
 | `normalizationDays` | 衰减比较前把各窗口净收益换算为每 N 天 |
 | `requirePositiveNet` | 验证段（及之后的最终评价段）扣成本净收益必须为正 |
 
-`judgeValidation(db, registry, {experimentId, version, expected})` 回放探索和验证窗口，把两段净收益按窗口时长归一，衰减率 =（探索 − 验证）/ 探索，十位小数四舍六入五成双。判定 `validationGate`：
+`judgeValidation(db, registry, {experimentId, version, expected})` 回放探索和验证窗口，把两段净收益按各窗口**实际覆盖的 K 线时长**归一（数据缺口既不压缩也不放大比率），衰减率 =（探索 − 验证）/ 探索，十位小数四舍六入五成双。判定 `validationGate`：
 
 - `failed`：探索段扣成本不为正（此时衰减率为 `null`，不做除法）；要求为正时验证段不为正；衰减率超过上限。
 - `insufficient`：任一窗口缺少数据；探索段已实现交易少于最少数；验证段没有已实现交易。
 - `met`：以上都不成立。
 
-`reasons` 先列失败原因，再列不足原因。只有文字门槛的登记返回 `blocked` / `rules_incomplete`。本接口不产生 `passed`，整体状态仍为 `insufficient`；验证窗口可以重复查看，查看次数不记录。
+证据不足优先于失败：只要存在不足原因，判定就是 `insufficient`，此时样本还不能下结论；`reasons` 仍先列失败原因、再列不足原因，二者都可见。只有文字门槛的登记返回 `blocked` / `rules_incomplete`。本接口不产生 `passed`，整体状态仍为 `insufficient`；验证窗口可以重复查看，查看次数不记录。
 
 ## 成本压力与基准
 
@@ -44,17 +44,19 @@
 
 `runFinalEvaluation(db, registry, {experimentId, version, expected}, now)` 是唯一能打开最终评价窗口的接口。它要求登记中已有 `replay`、`sensitivity`、`costStressMultipliers`、`costStressMustStayPositiveAt`（须在倍数列表中）和 `requireBeatHold`；缺任何一项返回 `blocked` / `rules_incomplete`，不保存任何内容，也不消耗这一次运行。
 
-满足条件时，它一次性计算：探索→验证判定、参数敏感性（含全部尝试）、最终评价窗口的指标、成本压力与持有/不交易基准。最终评价窗口判定 `evaluationGate`：无数据或无已实现交易为 `insufficient`；要求为正而净收益不为正、要求跑赢持有而净收益不高于持有、或在登记倍数的成本下净收益不为正，为 `failed`。
+登记了 `universe` 或 `replay.selection` 的实验返回 `blocked` / `universe_final_evaluation_unsupported`：一次性报告目前只评价单标的趋势回放，不能把唯一一次运行用在与登记策略不同的形态上。
+
+满足条件时，它一次性计算：探索→验证判定、参数敏感性（含全部尝试）、最终评价窗口的指标、成本压力与持有/不交易基准。最终评价窗口判定 `evaluationGate`（同样是不足优先）：无数据或无已实现交易为 `insufficient`；要求为正而净收益不为正、要求跑赢持有而净收益不高于持有、或在登记倍数的成本下净收益不为正，为 `failed`。
 
 整体 `status`：任一判定失败为 `failed`；三项全部达标（`gatesMet: true`）且没有证据缺口才是 `passed`。当前历史清单始终缺少历史可获知时间和历史标的池（`evidenceGaps`），因此 `passed` 暂时不可达，即使全部达标也只能是 `insufficient`。`passed` 只表示历史回放范围，不代表模拟或实盘准入；报告注明交易不是独立样本。
 
-报告以规范 JSON 和 SHA-256 保存到 `final_evaluation_reports`，每个实验版本一行，更新和删除由触发器禁止。再次调用（包括不同时钟）返回已保存的同一份报告；并发时先写入者的报告胜出。读取时校验哈希。报告内容来自本地登记与清单，不代表事前登记已被可信时间戳证明。
+报告以规范 JSON 和 SHA-256 保存到 `final_evaluation_reports`，每个实验版本一行，更新和删除由触发器禁止。再次调用（包括不同时钟）返回已保存的同一份报告；并发时先写入者的报告胜出。读取时校验哈希，不一致返回固定的 `PERSISTENCE_UNAVAILABLE`。报告内容来自本地登记与清单，不代表事前登记已被可信时间戳证明。
 
 ## 多标的汇总
 
 实验登记的可选 `universe`（需同时登记 `replay` 和带范围的 `data`）冻结至少两个成员，每个成员是一个分组标签和一份带自身范围的历史清单引用。所有成员的站点、产品和周期必须与主数据范围一致，标的不能重复；可选的 `regimes` 是按时间排列、互不重叠的行情阶段。`gates.multiInstrument` 冻结正收益分组的最低占比 `minPositiveGroupShare`（0 到 1）和最少正收益阶段数 `minPositiveRegimes`。
 
-`aggregateUniverse(db, registry, {experimentId, version, expected, window})` 对探索或验证窗口逐个核对成员清单（与主数据相同的范围、哈希、来源与窗口覆盖检查），用同一组登记参数回放，然后把所有已实现交易按出场时间合并为一条时间线，给出总体、每个分组和每个阶段（按入场时间归属）的指标。判定 `universeGate`：成员缺数据或总交易数少于 `minRealizedTrades` 为 `insufficient`；正收益分组占比低于下限或正收益阶段数不足为 `failed`。
+`aggregateUniverse(db, registry, {experimentId, version, expected, window})` 对探索或验证窗口逐个核对成员清单（与主数据相同的范围、哈希、来源与窗口覆盖检查），用同一组登记参数回放，然后把所有已实现交易按出场时间合并为一条时间线，给出总体、每个分组和每个阶段（按入场时间归属）的指标。判定 `universeGate`（不足优先）：成员缺数据或总交易数少于 `minRealizedTrades` 为 `insufficient`；正收益分组占比低于下限或正收益阶段数不足为 `failed`。登记时要求的正收益阶段数不能超过已登记的阶段数。
 
 只要历史标的池未知，结果就标 `survivorshipGap: true`：清单只来自登记时仍可查询的标的，退市标的缺席会使多品种结果偏乐观。各标的高度相关，分组为正不等于独立证据。多标的的最终评价窗口尚未接入一次性报告。
 
@@ -72,12 +74,12 @@
 
 ## 只读查看入口
 
-CLI `research evaluation <experimentId> <version>` 和 MCP 工具 `taoalpha_research_evaluation`（只读标注）通过同一业务逻辑读取已保存的最终评价报告。有报告时 `state: evaluated` 并返回完整报告；没有时 `state: no_report`、`report: null`，表示该实验版本未登记或尚未评价。入口绝不运行评价、不打开最终评价窗口、不产生交易所写请求。最终评价本身仍只能通过内部的 `runFinalEvaluation` 运行。
+CLI `research evaluation <experimentId> <version>` 和 MCP 工具 `taoalpha_research_evaluation`（只读标注）通过同一业务逻辑读取已保存的最终评价报告。有报告时 `state: evaluated` 并返回完整报告；已登记但尚未评价时 `state: no_report`；该版本未登记时 `state: not_registered`。后两者 `report` 均为 `null`。入口绝不运行评价、不打开最终评价窗口、不产生交易所写请求。最终评价本身仍只能通过内部的 `runFinalEvaluation` 运行。
 
 ## 规则与 Agent 否决对照
 
 实验登记的可选 `agentVetoes`（需同时登记 `replay.selection`）冻结一组否决，每条指向一个候选信号（标的与信号 K 线开盘时间）及产生它的研究运行。`compareAgentVeto(db, registry, {experimentId, version, expected, window})` 在探索或验证窗口内，分别运行纯规则选币和应用有效否决后的选币，返回两者的指标和净收益差。
 
-一条否决只有在以下条件都满足时才生效：研究运行存在、已经得出综合结论，并且运行与其证据包的创建时间都不晚于信号 K 线收盘。证据晚于信号的否决记为 `evidence_after_signal`，因为当时不可能知道这些信息。被否决的候选在排名前以 `agent_veto` 跳过，空出的仓位由下一个候选填补。
+一条否决只有在以下条件都满足时才生效：研究运行存在、已经得出综合结论，并且结论时间（`decidedAt`）与其证据包的创建时间都不晚于信号 K 线收盘。只有运行不存在时记为 `research_run_missing`；完整性或存储错误照常报错，不会被当成缺失。证据晚于信号的否决记为 `evidence_after_signal`，因为当时不可能知道这些信息。被否决的候选在排名前以 `agent_veto` 跳过，空出的仓位由下一个候选填补。
 
 当前研究证据包都采集于运行当时，没有历史时点的证据，因此对历史窗口的否决都会被拒绝，两组结果相同。这是如实结果，不代表 Agent 没有价值：真实对照需要先建立历史时点的研究证据。报告列出各研究运行的自报运行方式（`hostVerified` 恒为 false），并标明调用成本未记录、多个 Agent 报告不是统计独立样本。

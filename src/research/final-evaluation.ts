@@ -22,8 +22,14 @@ function storedReport(db:Db,experimentId:string,version:number) {
  if(!db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='final_evaluation_reports'").get()) return null;
  const row=db.prepare('SELECT content,content_sha256 FROM final_evaluation_reports WHERE experiment_id=? AND version=?').get(experimentId,version) as {content:string;content_sha256:string}|undefined;
  if(!row) return null;
- if(sha256(row.content)!==row.content_sha256) throw new Error('final evaluation report integrity failure');
+ if(sha256(row.content)!==row.content_sha256) throw new DomainError('PERSISTENCE_UNAVAILABLE','Final evaluation report integrity failure',[{ruleId:'research.evaluation_integrity'}]);
  return JSON.parse(row.content);
+}
+
+/** Whether an experiment version is registered, read without creating any table. */
+export function isRegistered(db:Db,experimentId:string,version:number):boolean {
+ if(!db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='experiment_preregistrations'").get()) return false;
+ return db.prepare('SELECT 1 FROM experiment_preregistrations WHERE experiment_id=? AND version=?').get(experimentId,version)!==undefined;
 }
 
 /** Reads a stored final report without ever running one; null when none exists for that version. */
@@ -43,6 +49,8 @@ export function runFinalEvaluation(db:Db,registry:Registry,raw:unknown,now:()=>D
  const loaded=loadRegisteredExperiment(db,registry,request);
  const {registration,inspection}=loaded, {replay,gates}=registration;
  const base={schemaVersion:1 as const,experimentId:request.experimentId,version:request.version,registrationSha256:registration.contentSha256,history:{reference:inspection.reference,sha256:inspection.sha256},executionAuthorized:false as const};
+ // The single run must judge the registered strategy; universe selection is not wired into this report.
+ if(registration.universe || replay?.selection) return {...base,outcome:'blocked' as const,reasonCode:'universe_final_evaluation_unsupported' as const,validation:null,sensitivity:null,evaluation:null,gatesMet:false,status:'insufficient' as const,evidenceGaps:[],sampleNotes:[]};
  if(!replay || !gates?.sensitivity || !gates.costStressMultipliers || gates.costStressMustStayPositiveAt===undefined || gates.requireBeatHold===undefined)
   return {...base,outcome:'blocked' as const,reasonCode:'rules_incomplete' as const,validation:null,sensitivity:null,evaluation:null,gatesMet:false,status:'insufficient' as const,evidenceGaps:[],sampleNotes:[]};
  const validation=judgeExplorationAndValidation(loaded,gates);
@@ -57,7 +65,7 @@ export function runFinalEvaluation(db:Db,registry:Registry,raw:unknown,now:()=>D
   if(gates.requireBeatHold && robustness.hold && !new Decimal(net).gt(robustness.hold.netUsdt)) failed.push('evaluation_does_not_beat_hold');
   if(stressed!==null && !new Decimal(stressed).gt(0)) failed.push('evaluation_not_positive_under_cost_stress');
  }
- const evaluationGate=failed.length ? 'failed' as const : insufficient.length ? 'insufficient' as const : 'met' as const;
+ const evaluationGate=insufficient.length ? 'insufficient' as const : failed.length ? 'failed' as const : 'met' as const;
  const gateStates=[validation.validationGate,sensitivity.sensitivityGate,evaluationGate];
  const gatesMet=gateStates.every(g=>g==='met');
  const evidenceGaps=inspection.unknowns.filter(u=>EVIDENCE_GAPS.includes(u)).sort();

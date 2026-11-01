@@ -32,7 +32,8 @@ test('too much decay, a losing exploration or a losing validation fail the gate'
   registry.register({...input,version:2,attemptId:'attempt:trend:2',windows:windowsAt(12,13,14),replay:{...replay,cost:{...replay.cost,exitFeePpm:1000000}},gates});
   const losing=judgeValidation(db,registry,{...request,version:2});
   assert.equal(losing.decay,null);
-  assert.deepEqual([losing.validationGate,losing.reasons],['failed',['exploration_net_not_positive','validation_no_realized_trades']]);
+  // Too little validation evidence outranks the failed exploration: the sample cannot decide yet.
+  assert.deepEqual([losing.validationGate,losing.reasons],['insufficient',['exploration_net_not_positive','validation_no_realized_trades']]);
  }finally{db.close()}
 });
 
@@ -46,5 +47,14 @@ test('too few trades is insufficient, not failed, and prose-only thresholds are 
   assert.deepEqual([prose.outcome,prose.reasonCode,prose.validationGate],['blocked','rules_incomplete',null]);
   const {replay:_,...noReplay}=input;
   expectDomainError(()=>registry.register({...noReplay,version:3,attemptId:'attempt:trend:3',gates}),'INVALID_INPUT');
+ }finally{db.close()}
+});
+
+test('decay normalizes by the bars a window actually covers, so a data gap does not inflate it',async()=>{
+ // Validation 6-13h is missing bar 12: it covers the same six bars as before, so the decay is unchanged.
+ const {db,registry,input}=await setup([12],bars);try {
+  registry.register({...input,windows:windowsAt(6,13,14),gates});
+  const result=judgeValidation(db,registry,request);
+  assert.deepEqual([result.validation!.normalizedNetUsdt,result.decay],['38.3','0.0135984341']);
  }finally{db.close()}
 });

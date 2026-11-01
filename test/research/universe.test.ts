@@ -44,6 +44,8 @@ test('too few positive groups or regimes fails, and universes must share one fro
   const next={...input,version:2,attemptId:'attempt:trend:2'};
   expectDomainError(()=>registry.register({...next,universe:{...universe,instruments:[universe.instruments[0]!,{group:'alts',data:{...data,scope:{...data.scope,resolution:'4H'}}}]}}),'INVALID_INPUT');
   expectDomainError(()=>registry.register({...next,universe:{...universe,instruments:[universe.instruments[0]!,universe.instruments[0]!]}}),'INVALID_INPUT');
+  // Requiring positive regimes without registering any regime could never pass.
+  expectDomainError(()=>registry.register({...next,universe:{instruments:universe.instruments},gates:{...base,multiInstrument:{minPositiveGroupShare:'0.5',minPositiveRegimes:1}}}),'INVALID_INPUT');
   const noUniverse=await setup();try {
    noUniverse.registry.register(noUniverse.input);
    assert.deepEqual([aggregateUniverse(noUniverse.db,noUniverse.registry,request).outcome],['blocked']);

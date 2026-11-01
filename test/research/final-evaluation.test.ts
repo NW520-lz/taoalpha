@@ -47,3 +47,20 @@ test('incomplete gates are blocked without consuming the single evaluation run',
   assert.equal(db.prepare("SELECT count(*) n FROM sqlite_master WHERE name='final_evaluation_reports'").get()!.n===0 || db.prepare('SELECT count(*) n FROM final_evaluation_reports').get()!.n===0,true);
  }finally{db.close()}
 });
+
+test('a tampered stored report fails closed, and universe registrations do not spend the run',async()=>{
+ const {db,registry,input}=await setup([],bars);try {
+  registry.register({...input,windows:windowsAt(6,12,18),gates});
+  runFinalEvaluation(db,registry,request,now);
+  db.exec('DROP TRIGGER final_evaluation_reports_no_update');
+  db.prepare("UPDATE final_evaluation_reports SET content='{}'").run();
+  assert.throws(()=>runFinalEvaluation(db,registry,request,now),(e:unknown)=>(e as {code?:string}).code==='PERSISTENCE_UNAVAILABLE');
+ }finally{db.close()}
+ const second=await setup([],bars);try {
+  const universe={instruments:[{group:'majors',data:second.input.data},{group:'majors',data:{...second.input.data,scope:{...expected,instId:'ETH-USDT'}}}]};
+  second.registry.register({...second.input,windows:windowsAt(6,12,18),gates,universe});
+  const blocked=runFinalEvaluation(second.db,second.registry,request,now);
+  assert.deepEqual([blocked.outcome,blocked.reasonCode],['blocked','universe_final_evaluation_unsupported']);
+  assert.equal(second.db.prepare("SELECT count(*) n FROM sqlite_master WHERE name='final_evaluation_reports'").get()!.n,0);
+ }finally{second.db.close()}
+});
