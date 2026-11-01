@@ -6,57 +6,65 @@ const H = 3_600_000;
 const free = { entryFeePpm: 0, exitFeePpm: 0, entryImpactPpm: 0, exitImpactPpm: 0, funding: 'not_applicable' } as const;
 // Synthetic hourly bars as [open, high, low, close].
 const bars = (rows: Array<[number, number, number, number]>) => rows.map(([o, h, l, c], i) => ({ ts: i * H, closeTime: (i + 1) * H, open: String(o), high: String(h), low: String(l), close: String(c) }));
+// Centred at the first open of 100: lines 80 / 100 / 120, stop 70.
 const input = (rows: Array<[number, number, number, number]>, rule = {}, cost = {}) => ({
  schemaVersion: 1, resolutionMs: H, candles: bars(rows),
  market: { product: 'spot', quote: 'USDT', baseQuantity: '1' },
- rule: { kind: 'grid_spot', lowerPrice: '100', upperPrice: '120', gridCount: 2, spacing: 'arithmetic', stopPrice: '90', ...rule },
+ rule: { kind: 'grid_spot', rangeFraction: '0.2', gridCount: 2, spacing: 'arithmetic', stopFraction: '0.3', ...rule },
  cost: { ...free, ...cost },
 });
 const brief = (t: { entryIndex: number; exitIndex: number; exitReason: string; entryPrice: string; exitPrice: string; netUsdt: string }) => [t.entryIndex, t.exitIndex, t.exitReason, t.entryPrice, t.exitPrice, t.netUsdt];
+const centres = (r: ReturnType<typeof replayGridCandles>) => r.grids.map(g => [g.startIndex, g.centre]);
 
-test('a buy at a grid line is sold at the next line up in a later bar', () => {
- // Levels 100 / 110 / 120. Bar 0 dips to 109 (buys at 110); bar 1 reaches 121 (sells at 120).
- const result = replayGridCandles(input([[115, 116, 109, 112], [112, 121, 111, 118], [118, 119, 117, 118]]));
- assert.deepEqual(result.levels, ['100', '110', '120']);
- assert.deepEqual(result.hypotheticalTrades.map(brief), [[0, 1, 'grid_sell', '110', '120', '10']]);
- assert.deepEqual([result.stoppedAtIndex, result.maxEquityDrawdownUsdt, result.executionAuthorized], [null, '0', false]);
+test('a grid centred on the first open buys at a line and sells at the next line up in a later bar', () => {
+ const result = replayGridCandles(input([[100, 101, 79, 90], [90, 101, 85, 95]]));
+ assert.deepEqual([result.grids[0]!.levels, result.grids[0]!.stopPrice], [['80', '100', '120'], '70']);
+ assert.deepEqual(result.hypotheticalTrades.map(brief), [[0, 1, 'grid_sell', '80', '100', '20']]);
+ assert.deepEqual([result.stops, result.maxEquityDrawdownUsdt, result.executionAuthorized], [[], '0', false]);
 });
 
 test('a same-bar round trip is not counted, and open inventory drives the equity drawdown', () => {
- // Bar 0 touches both 109 and 121, but only the buy at 110 counts; bar 1 closes at 106 with the slot still held.
- const result = replayGridCandles(input([[115, 121, 109, 112], [112, 113, 105, 106]]));
- assert.deepEqual(result.hypotheticalTrades.map(brief), [[0, 1, 'end_of_data', '110', '106', '-4']]);
- assert.deepEqual([result.maxEquityDrawdownUsdt, result.maxInventorySlots], ['6', 1]);
+ // Bar 0 touches 79 and 121, but only the buy at 80 counts; bar 1 closes at 76 with the slot still held.
+ const result = replayGridCandles(input([[100, 121, 79, 90], [90, 95, 75, 76]]));
+ assert.deepEqual(result.hypotheticalTrades.map(brief), [[0, 1, 'end_of_data', '80', '76', '-4']]);
+ assert.deepEqual([result.maxEquityDrawdownUsdt, result.maxInventorySlots], ['14', 1]);
 });
 
-test('a buy line above the reference price waits until a close above it', () => {
- // Opens at 105: only the 100 line rests. The 110 line arms after bar 1 closes at 111.
- const result = replayGridCandles(input([[105, 106, 99, 104], [104, 112, 103, 111], [111, 112, 109, 110], [110, 111, 108, 109]]));
- assert.deepEqual(result.hypotheticalTrades.map(brief), [[0, 1, 'grid_sell', '100', '110', '10'], [2, 3, 'end_of_data', '110', '109', '-1']]);
+test('a buy line at or above the reference price waits until a close above it', () => {
+ // The 100 line equals the first open, so it rests only after bar 0 closes at 101.
+ const result = replayGridCandles(input([[100, 101, 95, 101], [101, 102, 99, 101]]));
+ assert.deepEqual(result.hypotheticalTrades.map(brief), [[1, 1, 'end_of_data', '100', '101', '1']]);
 });
 
-test('a bar reaching the stop fills every resting buy, sells everything at the stop and ends the grid', () => {
- // Bar 1 spans 85..125: the worst path goes down first, so the 120 sell never happens and the 100 buy does.
- const result = replayGridCandles(input([[115, 116, 109, 112], [112, 125, 85, 95], [95, 130, 94, 125]]));
- assert.deepEqual(result.hypotheticalTrades.map(brief), [[1, 1, 'stop', '100', '90', '-10'], [0, 1, 'stop', '110', '90', '-20']]);
- assert.deepEqual([result.stoppedAtIndex, result.maxEquityDrawdownUsdt], [1, '32']);
+test('a bar reaching the stop fills every resting buy, exits everything at the stop and re-centres next bar', () => {
+ // Bar 1 spans 65..125: the worst path goes down first, so the 100 sell never happens and the 100 buy does.
+ const result = replayGridCandles(input([[100, 106, 79, 105], [105, 125, 65, 72], [72, 73, 71, 72]]));
+ assert.deepEqual(result.hypotheticalTrades.map(brief), [[0, 1, 'stop', '80', '70', '-10'], [1, 1, 'stop', '100', '70', '-30']]);
+ assert.deepEqual([result.stops, centres(result), result.maxEquityDrawdownUsdt], [[1], [[0, '100'], [2, '72']], '65']);
 });
 
 test('an open below the stop fills the stop at that open', () => {
- const result = replayGridCandles(input([[115, 116, 109, 112], [88, 89, 80, 85]]));
- assert.deepEqual(result.hypotheticalTrades.map(brief), [[1, 1, 'gap_through_stop', '100', '88', '-12'], [0, 1, 'gap_through_stop', '110', '88', '-22']]);
- assert.equal(result.stoppedAtIndex, 1);
+ const result = replayGridCandles(input([[100, 106, 79, 105], [69, 70, 60, 65]]));
+ assert.deepEqual(result.hypotheticalTrades.map(brief), [[0, 1, 'gap_through_stop', '80', '69', '-11'], [1, 1, 'gap_through_stop', '100', '69', '-31']]);
+});
+
+test('an empty grid re-centres when price leaves its range, but not while it holds inventory', () => {
+ assert.deepEqual(centres(replayGridCandles(input([[100, 126, 99, 125], [125, 126, 124, 125]]))), [[0, '100'], [1, '125']]);
+ const holding = replayGridCandles(input([[100, 126, 79, 125], [125, 126, 124, 125]]));
+ assert.deepEqual([centres(holding), holding.hypotheticalTrades.map(brief)], [[[0, '100']], [[0, 1, 'grid_sell', '80', '100', '20']]]);
 });
 
 test('costs apply once per side on notional, and geometric lines grow by a constant ratio', () => {
- const costly = replayGridCandles(input([[115, 116, 109, 112], [112, 121, 111, 118]], {}, { entryFeePpm: 1000, exitFeePpm: 1000, entryImpactPpm: 500, exitImpactPpm: 500 }));
+ const costly = replayGridCandles(input([[100, 101, 79, 90], [90, 101, 85, 95]], {}, { entryFeePpm: 1000, exitFeePpm: 1000, entryImpactPpm: 500, exitImpactPpm: 500 }));
  const [trade] = costly.hypotheticalTrades;
- assert.deepEqual([trade!.grossUsdt, trade!.feesUsdt, trade!.impactUsdt, trade!.netUsdt], ['10', '0.23', '0.115', '9.655']);
- assert.deepEqual(replayGridCandles(input([[150, 150, 150, 150]], { upperPrice: '144', gridCount: 2, spacing: 'geometric' })).levels, ['100', '120', '144']);
+ assert.deepEqual([trade!.grossUsdt, trade!.feesUsdt, trade!.impactUsdt, trade!.netUsdt], ['20', '0.18', '0.09', '19.73']);
+ // Geometric between 80 and 120: the middle line is sqrt(80 x 120) = 97.97958971...
+ const geometric = replayGridCandles(input([[100, 100, 100, 100]], { spacing: 'geometric' }));
+ assert.deepEqual(geometric.grids[0]!.levels.map(l => Number(l).toFixed(6)), ['80.000000', '97.979590', '120.000000']);
 });
 
-test('an inverted range or a stop inside it is rejected as invalid input', () => {
- for (const rule of [{ stopPrice: '100' }, { upperPrice: '100' }, { gridCount: 0 }]) {
-  assert.throws(() => replayGridCandles(input([[115, 116, 109, 112]], rule)), (e: { code?: string }) => e.code === 'INVALID_INPUT');
+test('a stop inside the range, a range of 100% or more, or no grid lines is rejected as invalid input', () => {
+ for (const rule of [{ stopFraction: '0.2' }, { rangeFraction: '1', stopFraction: '1.1' }, { gridCount: 0 }]) {
+  assert.throws(() => replayGridCandles(input([[100, 101, 99, 100]], rule)), (e: { code?: string }) => e.code === 'INVALID_INPUT');
  }
 });
