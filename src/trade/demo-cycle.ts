@@ -72,7 +72,9 @@ export async function runDemoCycle(d: CycleDeps) {
  const active = d.activeGrant(); if (!active) return stop('grant', ['cycle.no_active_grant']);
  const policy = d.riskPolicy(active.grant.riskPolicyVersion); if (!policy) return stop('grant', ['cycle.risk_policy_missing']);
  const intents = createExecutionIntentService(d.db, d.now);
- const veto = createVetoWindowService(d.db, { internalActive: () => d.activeGrant() as never },
+ // The grant is read through a 30-second account snapshot; a failed read is "no active grant", never a crash.
+ const grantNow = () => { try { return d.activeGrant(); } catch { return null; } };
+ const veto = createVetoWindowService(d.db, { internalActive: () => grantNow() as never },
   { current: () => ({ openPositions: intents.openPositions(active.scopeId), realizedLossTodayUsdt: '0' }) }, d.now);
  const market = await d.market();
  const signal = pipelineSignal({ instId: INST, candles: market.candles, evidenceRef: market.quote.sourceRef });
@@ -87,16 +89,23 @@ export async function runDemoCycle(d: CycleDeps) {
   portfolio: { accountReconciled: recon.accountReconciled, lossLedgerBlocksNewRisk: false, commitments: intents.openCommitments(active.scopeId, { at: market.quote.at, pricesUsdt: { [INST]: market.quote.priceUsdt } }) },
   validForSeconds: active.grant.vetoWindowSeconds + 900 }, d.now);
  if (!compiled.card) return stop('card', compiled.reasons);
- const card = compiled.card, submitted = veto.submit(card);
+ const card = compiled.card;
+ if (!(await d.refreshSession())) return stop('session', ['cycle.session_unavailable']);
+ const submitted = veto.submit(card);
  if (submitted.status !== 'awaiting_display') return stop('veto', submitted.reasons);
  d.log(`card ${card.contentSha256.slice(0, 12)}: showing veto window`);
- let shown = false;
- const shownResult = await d.display.show(view(card, active.grant.vetoWindowSeconds), () => { veto.markDisplayed(card.contentSha256); shown = true; });
- if (!shown) return stop('display', ['cycle.display_unavailable']);
+ if (!(await d.refreshSession())) { veto.reject(card.contentSha256); return stop('session', ['cycle.session_unavailable']); }
+ let shown = false, windowEndsAt = '';
+ const shownResult = await d.display.show(view(card, active.grant.vetoWindowSeconds), () => {
+  try { windowEndsAt = veto.markDisplayed(card.contentSha256).windowEndsAt; shown = true; } catch { /* no window started */ }
+ });
+ if (!shown) { veto.reject(card.contentSha256); return stop('display', ['cycle.display_unavailable']); }
  // A rejection, a closed window or a display that broke after showing all void the card.
  if (shownResult !== 'elapsed') { veto.reject(card.contentSha256); return stop('veto', [shownResult === 'rejected' ? 'cycle.user_rejected' : 'cycle.display_failed']); }
- let settled = veto.settle(card.contentSha256);
- for (let i = 0; settled.status === 'in_window' && i < 120; i++) { await d.sleep(1000); settled = veto.settle(card.contentSha256); }
+ // Wait out the recorded window, then refresh the snapshot so the end-of-window recheck sees the current grant.
+ for (let i = 0; d.now().getTime() < Date.parse(windowEndsAt) && i < 3600; i++) await d.sleep(1000);
+ await d.refreshSession();
+ const settled = veto.settle(card.contentSha256);
  if (settled.status !== 'approved') return stop('veto', [`cycle.${settled.status}`, ...settled.reasons]);
  const intent = intents.consume(card.contentSha256);
  const fresh = await reconcileScope(d.db, await d.readAccount(), active, d.now().getTime());

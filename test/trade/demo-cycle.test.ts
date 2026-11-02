@@ -53,3 +53,24 @@ test('a rejected card voids without sending anything', async () => {
   assert.equal(sent.length, 0);
  } finally { db.close(); }
 });
+
+test('a grant read that fails (e.g. an expired account snapshot) counts as no grant: no crash, nothing sent', async () => {
+ const { d, db, sent } = deps('elapsed'); try {
+  let calls = 0; const real = d.activeGrant;
+  d.activeGrant = () => { if (++calls > 1) throw new Error('snapshot expired'); return real(); };
+  const report = await runDemoCycle(d);
+  assert.deepEqual([report.stage, report.reasons], ['veto', ['veto.no_active_grant']]);
+  assert.equal(sent.length, 0);
+ } finally { db.close(); }
+});
+
+test('the session is refreshed before the card is submitted, before it is shown and before the window is settled', async () => {
+ const { d, db } = deps('elapsed'); try {
+  const order: string[] = []; const show = d.display.show;
+  d.refreshSession = async () => { order.push('refresh'); return true; };
+  d.display = { show: (card, onShown) => { order.push('show'); return show(card, onShown); } };
+  await runDemoCycle(d);
+  assert.deepEqual(order.slice(0, 4), ['refresh', 'refresh', 'refresh', 'show']);
+  assert.equal(order[4], 'refresh');
+ } finally { db.close(); }
+});
