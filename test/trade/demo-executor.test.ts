@@ -139,3 +139,11 @@ test('an exit below one lot is refused and sends nothing', async () => {
   assert.equal(calls.length, 1);
  } finally { db.close(); }
 });
+
+test('the pre-submit recheck tolerates up to 10 seconds of exchange clock lead', async () => {
+ const { db, clock, intent, executor } = setup(); try {
+  clock.now = at(602);
+  assert.deepEqual((await executor.submitEntry(intent.intentId, checks({ quote: { priceUsdt: '100', at: at(614).toISOString() } }))).reasons, ['execution.quote_stale']);
+  assert.equal((await executor.submitEntry(intent.intentId, checks({ quote: { priceUsdt: '100', at: at(607).toISOString() } }))).status, 'accepted');
+ } finally { db.close(); }
+});

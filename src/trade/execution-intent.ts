@@ -29,7 +29,15 @@ export function createExecutionIntentService(db: Db, now: () => Date) {
  inTransaction(db, () => { for (const sql of DDL) db.exec(sql); });
  const view = (row: { content_json: string }) => ({ ...(JSON.parse(row.content_json) as Intent), state: 'reserved' as const });
  // No release path exists yet: until exchange reconciliation proves an intent final, every intent stays open (I-09).
- const open = (scopeId: string) => allRows<{ content_json: string }>(db, 'SELECT content_json FROM execution_intents WHERE scope_id=? ORDER BY rowid', scopeId).map(view);
+ // An intent is known final, and so released, only when its card expired and none of its orders was ever sent.
+ const open = (scopeId: string) => {
+  const sentTable = !!getRow(db, "SELECT 1 FROM sqlite_master WHERE type='table' AND name='execution_submissions'");
+  const rows = allRows<{ content_json: string; expires_at: string; sent: number }>(db, `SELECT i.content_json, json_extract(c.card_json,'$.expiresAt') expires_at,
+   ${sentTable ? '(SELECT count(*) FROM execution_submissions s WHERE s.intent_id=i.intent_id)' : '0'} sent
+   FROM execution_intents i JOIN veto_cards c ON c.card_hash=i.card_hash WHERE i.scope_id=? ORDER BY i.rowid`, scopeId);
+  const at = now().getTime();
+  return rows.filter(r => r.sent > 0 || Date.parse(r.expires_at) > at).map(view);
+ };
  return {
   /** Unreleased intents as entry-risk commitments, valued at one instant; a missing price blocks instead of counting as zero. */
   openCommitments(scopeId: string, valuation: { at: string; pricesUsdt: Record<string, string> }): RiskCommitment[] {

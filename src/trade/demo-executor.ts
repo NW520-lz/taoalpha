@@ -69,7 +69,8 @@ export function createDemoExecutor(db: Db, writer: DemoWriter, now: () => Date) 
    if (at >= Date.parse(card.expiresAt)) return blocked('execution.card_expired');
    if (checks.reconciliation.blockNewRisk) return blocked('execution.account_blocked');
    const age = at - Date.parse(checks.quote.at);
-   if (age < 0 || age > checks.maxQuoteAgeSeconds * 1000) return blocked('execution.quote_stale');
+   // Up to 10 s of exchange clock lead is skew, as for cards; further ahead or too old is stale.
+   if (age < -10_000 || age > checks.maxQuoteAgeSeconds * 1000) return blocked('execution.quote_stale');
    const reference = dec(card.entry.referencePriceUsdt);
    if (dec(checks.quote.priceUsdt).minus(reference).abs().div(reference).times(1_000_000).gt(checks.maxPriceDeviationPpm)) return blocked('execution.price_moved');
    const args = { instId: intent.instId, tdMode: 'cash', side: 'buy', ordType: 'market', sz: intent.baseQuantity, tgtCcy: 'base_ccy', clOrdId: entryId };

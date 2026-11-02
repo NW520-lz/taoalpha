@@ -45,3 +45,9 @@ test('only demo cards exist, and the signal must name the instrument it is price
  invalid({ scope: { scopeId: 'scope:synthetic', accountRef: 'account:synthetic', site: 'global', environment: 'live' } });
  invalid({ signal: { ...input().signal as object, instId: 'ETH-USDT' } });
 });
+
+test('a quote up to 10 seconds ahead of the local clock is accepted as clock skew; further ahead is stale', () => {
+ const ahead = (s: number) => compileDemoCard(input({ quote: { priceUsdt: '100', at: new Date(now().getTime() + s * 1000).toISOString(), sourceRef: 'quote:synthetic', maxAgeSeconds: 30 } }), now);
+ assert.equal(ahead(5).outcome, 'compiled');
+ assert.deepEqual(ahead(15).reasons, ['card.quote_stale']);
+});

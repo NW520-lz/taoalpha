@@ -39,7 +39,8 @@ export function compileDemoCard(raw: unknown, now: () => Date) {
  const blocked = (reasons: string[]) => ({ outcome: 'blocked' as const, reasons, card: null });
  // A quote from the future or older than its allowed age cannot price a card.
  const quoteAge = at.getTime() - Date.parse(input.quote.at);
- if (quoteAge < 0 || quoteAge > input.quote.maxAgeSeconds * 1000) return blocked(['card.quote_stale']);
+ // Exchange timestamps may lead the local clock a little (observed ~4.5 s); beyond 10 s the quote is not trusted.
+ if (quoteAge < -10_000 || quoteAge > input.quote.maxAgeSeconds * 1000) return blocked(['card.quote_stale']);
  const instrument = input.instrument as EntryRiskInput['instrument'];
  const tick = dec(instrument.tickSz), lot = dec(instrument.lotSz);
  const entry = floorTo(dec(input.quote.priceUsdt), tick), atr = dec(input.signal.atrUsdt);

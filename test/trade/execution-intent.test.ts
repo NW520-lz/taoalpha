@@ -85,3 +85,19 @@ test('every unreleased intent keeps its budget, plan loss and position slot in l
   assert.deepEqual([intents.openCommitments('scope:other', valuation), intents.openPositions('scope:other')], [[], 0]);
  } finally { db.close(); }
 });
+
+test('an intent whose card expired without any order ever sent is released; one that was sent stays open', () => {
+ const db = openDb(':memory:'), clock = { now: t0 }; try {
+  const { veto, intents } = services(db, clock);
+  const unsent = intents.consume(approvedCard(veto, clock).contentSha256);
+  const sent = intents.consume(approvedCard(veto, clock, { maxPlanLossUsdt: '0.5' }).contentSha256);
+  db.exec("CREATE TABLE IF NOT EXISTS execution_submissions(client_order_id TEXT PRIMARY KEY,intent_id TEXT NOT NULL,role TEXT NOT NULL,args_json TEXT NOT NULL,sent_at TEXT NOT NULL)");
+  db.prepare('INSERT INTO execution_submissions VALUES(?,?,?,?,?)').run(sent.actions[0]!.clientOrderId, sent.intentId, 'entry', '{}', t0.toISOString());
+  assert.equal(intents.openPositions('scope:synthetic'), 2);
+  // Both cards expire an hour after compilation.
+  clock.now = new Date(t0.getTime() + 3_600_000);
+  assert.deepEqual(intents.list('scope:synthetic').map(i => i.intentId), [sent.intentId]);
+  assert.equal(intents.openPositions('scope:synthetic'), 1);
+  assert.equal(unsent.state, 'reserved');
+ } finally { db.close(); }
+});

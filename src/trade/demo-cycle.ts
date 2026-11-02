@@ -108,10 +108,11 @@ export async function runDemoCycle(d: CycleDeps) {
  const settled = veto.settle(card.contentSha256);
  if (settled.status !== 'approved') return stop('veto', [`cycle.${settled.status}`, ...settled.reasons]);
  const intent = intents.consume(card.contentSha256);
- const fresh = await reconcileScope(d.db, await d.readAccount(), active, d.now().getTime());
- const quote = (await d.market()).quote;
+ // Open the writer first, so the re-check and the quote are as fresh as possible when the entry is sent.
  const writer = await d.openWriter();
  try {
+  const fresh = await reconcileScope(d.db, await d.readAccount(), active, d.now().getTime());
+  const quote = (await d.market()).quote;
   const executor = createDemoExecutor(d.db, writer, d.now);
   const entry = await executor.submitEntry(intent.intentId, { reconciliation: fresh, quote, maxQuoteAgeSeconds: 30, maxPriceDeviationPpm: 10_000 });
   d.log(`entry: ${entry.status} ${entry.reasons.join(',')}`);
