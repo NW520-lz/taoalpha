@@ -110,3 +110,17 @@ test('pending cards list their remaining window, and stored window facts cannot 
   assert.deepEqual(service.pending().map(p => p.cardHash), [waiting.contentSha256]);
  } finally { db.close(); }
 });
+
+test('the grant is read outside any database transaction, as the real account session requires', () => {
+ const db = openDb(':memory:'); try {
+  let now = t0;
+  const active = { proposalId: 'grant:one', subjectHash: 'a'.repeat(64), scopeId: 'scope:synthetic', accountRef: 'account:synthetic', site: 'global', confirmedAt: '2026-11-01T00:00:00Z', grant };
+  // The real session opens its own transaction to read the snapshot, so a nested call fails there.
+  const service = createVetoWindowService(db, { internalActive: () => { if (db.isTransaction) throw new Error('nested transaction'); return active as never; } }, { current: () => ({ openPositions: 0, realizedLossTodayUsdt: '0' }) }, () => now);
+  const c = card();
+  assert.equal(service.submit(c).status, 'awaiting_display');
+  service.markDisplayed(c.contentSha256);
+  now = after(600);
+  assert.equal(service.settle(c.contentSha256).status, 'approved');
+ } finally { db.close(); }
+});

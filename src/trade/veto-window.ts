@@ -58,10 +58,12 @@ export function createVetoWindowService(db: Db, grants: GrantSource, exposure: E
  }
  return {
   submit(card: TradeCard) {
+   // The grant source reads the account snapshot in its own transaction, so it is read before ours begins.
+   const active = grants.internalActive();
    return inTransaction(db, () => {
     checkIntegrity(card);
     if (getRow(db, 'SELECT 1 FROM veto_cards WHERE card_hash=?', card.contentSha256)) return { cardHash: card.contentSha256, status: 'awaiting_display' as const, reasons: [] as string[] };
-    const active = grants.internalActive(), reasons = outsideGrant(card, active);
+    const reasons = outsideGrant(card, active);
     if (reasons.length || !active) return { cardHash: card.contentSha256, status: 'out_of_scope' as const, reasons };
     db.prepare('INSERT INTO veto_cards VALUES(?,?,?,?,?)').run(card.contentSha256, canonicalJson(card), active.proposalId, active.subjectHash, iso());
     return { cardHash: card.contentSha256, status: 'awaiting_display' as const, reasons: [] as string[] };
@@ -69,12 +71,12 @@ export function createVetoWindowService(db: Db, grants: GrantSource, exposure: E
   },
   /** Called only by the local display adapter after the card was actually shown. */
   markDisplayed(cardHash: string) {
+   const active = grants.internalActive();
    return inTransaction(db, () => {
     stored(cardHash);
     if (rejected(cardHash)) fail('veto.rejected');
     const prior = display(cardHash); if (prior) return { cardHash, windowEndsAt: prior.window_ends_at };
     // No window starts without the grant the card was accepted under.
-    const active = grants.internalActive();
     if (!active) fail('veto.no_active_grant');
     if (active.proposalId !== stored(cardHash).grant_proposal_id) fail('veto.grant_changed');
     const at = now(), ends = new Date(at.getTime() + active.grant.vetoWindowSeconds * 1000).toISOString();
@@ -105,6 +107,7 @@ export function createVetoWindowService(db: Db, grants: GrantSource, exposure: E
     : Date.parse(r.window_ends_at) > at ? [{ cardHash: r.card_hash, status: 'in_window' as const, secondsLeft: Math.ceil((Date.parse(r.window_ends_at) - at) / 1000) }] : []);
   },
   settle(cardHash: string) {
+   const current = grants.internalActive();
    return inTransaction(db, () => {
     const card = stored(cardHash);
     const approved = getRow<{ approval_json: string }>(db, 'SELECT approval_json FROM veto_approvals WHERE card_hash=?', cardHash);
@@ -117,7 +120,7 @@ export function createVetoWindowService(db: Db, grants: GrantSource, exposure: E
     if (!shown) return { cardHash, status: 'awaiting_display' as const, reasons: none, approval: null };
     if (now().getTime() < Date.parse(shown.window_ends_at)) return { cardHash, status: 'in_window' as const, reasons: none, approval: null };
     // Re-check everything at the window's end; the daily quota was spent at submission. A void is permanent.
-    const active = grants.internalActive();
+    const active = current;
     const reasons = !active ? ['veto.no_active_grant'] : active.proposalId !== card.grant_proposal_id || active.subjectHash !== card.grant_subject_hash ? ['veto.grant_changed']
      : outsideGrant(JSON.parse(card.card_json) as TradeCard, active, cardHash).filter(r => r !== 'veto.daily_card_limit');
     if (reasons.length) { db.prepare('INSERT INTO veto_voids VALUES(?,?,?)').run(cardHash, canonicalJson(reasons), iso()); return { cardHash, status: 'void' as const, reasons, approval: null }; }
