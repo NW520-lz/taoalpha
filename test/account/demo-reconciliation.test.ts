@@ -11,11 +11,11 @@ function snapshot(over: Record<string, unknown> = {}) {
    spotProtection: page('GET /api/v5/trade/orders-algo-pending', []), perpetualProtection: page('GET /api/v5/trade/orders-algo-pending', []),
    bills: page('GET /api/v5/account/bills', []), fills: page('GET /api/v5/trade/fills', []), ...over } } as never;
 }
-const accountOk = { ok: true, readsComplete: true, account: { positions: [] } } as never;
+const accountOk = { ok: true, readsComplete: true, account: { positions: [], equity: { assets: [] } } } as never;
 const intent = { intentId: 'intent_one', instId: 'BTC-USDT', actions: [{ role: 'entry', clientOrderId: 'taeA' }, { role: 'initial_stop', clientOrderId: 'tasA' }, { role: 'trailing_stop', clientOrderId: 'tatA' }] };
 const NOW = Date.parse('2026-11-02T10:00:00Z'), DAY = 86_400_000;
 const full = (over: Record<string, unknown> = {}) => ({ snapshot: snapshot(), account: accountOk, intents: [intent], now: NOW,
- capital: { sinceMs: NOW - DAY, recordedBillIds: [] as string[] }, submittedIntentIds: [] as string[], entryLookups: {}, ...over });
+ capital: { sinceMs: NOW - DAY, recordedBillIds: [] as string[] }, submittedIntentIds: [] as string[], entryLookups: {}, managedHoldings: {}, ...over });
 
 test('a complete read with only our own orders, each filled entry protected, does not block', () => {
  const snap = snapshot({ spotOrders: page('GET /api/v5/trade/orders-pending', [{ instId: 'BTC-USDT', clOrdId: 'taeA', state: 'partially_filled', accFillSz: '0.1' }]),
@@ -23,8 +23,8 @@ test('a complete read with only our own orders, each filled entry protected, doe
  const result = reconcileDemoAccount(full({ snapshot: snap }) as never);
  assert.deepEqual([result.blockNewRisk, result.reasons, result.unmanagedOrders], [false, [], 0]);
  assert.deepEqual(result.intents, [{ intentId: 'intent_one', entry: 'partially_filled', initialStop: 'live', trailingStop: 'live' }]);
- // No blocking discrepancy, yet the account is not reconciled while these facts remain unread.
- assert.deepEqual([result.accountReconciled, result.gaps], [false, ['managed_spot_ownership']]);
+ // With no blocking discrepancy and every fact read, the account is reconciled.
+ assert.deepEqual([result.accountReconciled, result.gaps], [true, []]);
 });
 
 test('incomplete reads, foreign orders, perpetual positions and a filled entry without a stop all block', () => {
@@ -33,7 +33,7 @@ test('incomplete reads, foreign orders, perpetual positions and a filled entry w
  assert.deepEqual(reasons(snapshot(), { ok: false, readsComplete: true }), ['reconcile.read_incomplete']);
  assert.deepEqual(reasons(snapshot({ spotOrders: page('GET /api/v5/trade/orders-pending', [{ instId: 'ETH-USDT', clOrdId: 'manual1', state: 'live', accFillSz: '0' }]) })), ['reconcile.unmanaged_order']);
  assert.deepEqual(reasons(snapshot({ perpetualProtection: page('GET /api/v5/trade/orders-algo-pending', [{ instId: 'BTC-USDT-SWAP', algoClOrdId: '', state: 'live' }]) })), ['reconcile.unmanaged_order']);
- assert.deepEqual(reasons(snapshot(), { ok: true, readsComplete: true, account: { positions: [{ instrumentId: 'BTC-USDT-SWAP', contracts: '1' }] } }), ['reconcile.unmanaged_position']);
+ assert.deepEqual(reasons(snapshot(), { ok: true, readsComplete: true, account: { positions: [{ instrumentId: 'BTC-USDT-SWAP', contracts: '1' }], equity: { assets: [] } } }), ['reconcile.unmanaged_position']);
  assert.deepEqual(reasons(snapshot({ spotOrders: page('GET /api/v5/trade/orders-pending', [{ instId: 'BTC-USDT', clOrdId: 'taeA', state: 'partially_filled', accFillSz: '0.1' }]) })), ['reconcile.protection_missing']);
 });
 
@@ -55,5 +55,14 @@ test('a submitted entry missing from open orders needs a lookup: filled without 
  assert.deepEqual(submitted({ status: 'found', row: { clOrdId: 'taeA', state: 'filled', accFillSz: '0.2' } }), ['reconcile.protection_missing']);
  assert.deepEqual(submitted({ status: 'found', row: { clOrdId: 'taeA', state: 'canceled', accFillSz: '0' } }), []);
  const r = reconcileDemoAccount(full() as never);
- assert.deepEqual([r.reasons, r.gaps, r.accountReconciled], [[], ['managed_spot_ownership'], false]);
+ assert.deepEqual([r.reasons, r.gaps, r.accountReconciled], [[], [], true]);
+});
+
+test('managed spot holdings must be covered by the coin balance; extra coins are unmanaged and ignored', () => {
+ const withBalance = (eq: string) => ({ ok: true, readsComplete: true, account: { positions: [], equity: { assets: [{ currency: 'BTC', equity: { amount: eq, unit: 'coin' } }] } } });
+ const run = (eq: string, managed: Record<string, string>) => reconcileDemoAccount(full({ account: withBalance(eq), managedHoldings: managed }) as never);
+ const ok = run('0.5', { BTC: '0.2325' });
+ assert.deepEqual([ok.reasons, ok.gaps, ok.accountReconciled], [[], [], true]);
+ assert.deepEqual(run('0.2', { BTC: '0.2325' }).reasons, ['reconcile.managed_holding_missing']);
+ assert.deepEqual(run('0', { ETH: '1' }).reasons, ['reconcile.managed_holding_missing']);
 });
