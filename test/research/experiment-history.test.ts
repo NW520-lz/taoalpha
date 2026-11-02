@@ -118,3 +118,15 @@ test('storage failure categories survive with sanitized details',async()=>{
   assert.throws(()=>inspectExperimentHistory(db,registry,{experimentId:'experiment:one',version:1,expected}),(e:unknown)=>{assert.ok(e instanceof DomainError);assert.equal(e.code,'PERSISTENCE_UNAVAILABLE');assert.doesNotMatch(String(e)+JSON.stringify(e),/sqlite|database is not open/i);return true});
  }finally{if(db.isOpen)db.close()}
 });
+
+test('a manifest collected over more than 200 pages is still inspected',async()=>{
+ // One 1m candle per page: 250 pages, within the collector's 1000-page bound.
+ const paged:PublicClient={site:'global',async get<T>(path:string,query:Record<string,string>){const ts=Math.ceil(Number(query.after)/60000)*60000-60000;const rows=(ts>=0 ? [row(ts)] : []) as T[];return {ok:true as const,endpoint:path,rows,raw:{endpoint:path,receivedAt:'1970-01-02T00:00:00.000Z',status:200,body:JSON.stringify(rows)}}}};
+ const db=openDb(':memory:');const registry=createExperimentRegistry(db,now);try {
+  const end=250*60000, manifest=await collectHistory(paged,{...expected,start:0,end,asOf:end,limit:1,maxPages:1000,capturedAt:'1970-01-02T00:00:00.000Z'});
+  assert.ok(manifest.sources.length>200);
+  const id=saveHistory(db,manifest);const iso=(m:number)=>new Date(m*60000).toISOString();
+  registry.register({experimentId:'experiment:paged',version:1,attemptId:'attempt:paged',strategy:{id:'strategy:paged',version:1,entryRules:'entry',exitRules:'exit',invalidationRules:'invalid'},data:{reference:id,sha256:id.slice(8),version:manifest.parsingVersion,scope:expected},code:{reference:'code:one',sha256:'b'.repeat(64),version:'v1'},costs:{fees:'unknown',spread:'unknown',slippage:'unknown',funding:'unknown',execution:'unknown'},windows:{exploration:{start:iso(0),end:iso(100)},validation:{start:iso(100),end:iso(200)},evaluation:{start:iso(200),end:iso(250)}},evaluation:{metrics:'unknown',thresholds:'unknown',baseline:'unknown',method:'unknown'}});
+  assert.equal(inspectExperimentHistory(db,registry,{experimentId:'experiment:paged',version:1,expected}).reportedCandleCoverage,'complete');
+ }finally{db.close()}
+});
