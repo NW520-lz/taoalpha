@@ -8,7 +8,7 @@ export type ReadonlyJsonValue = null | boolean | number | string | readonly Read
 export interface ReadonlyJsonObject { readonly [key: string]: ReadonlyJsonValue }
 export interface ConfirmationSubject {
   version: number;
-  kind: "risk_policy" | "account_baseline" | "trade_plan" | "risk_recovery" | "live_activation";
+  kind: "risk_policy" | "account_baseline" | "trade_plan" | "risk_recovery" | "live_activation" | "standing_authorization";
   scopeId: string;
   /** Backend account registry reference, never a credential or exchange account identifier. */
   accountRef: string;
@@ -54,7 +54,7 @@ export interface ConfirmationReceipt {
 const reference = z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/);
 const subjectSchema = z.strictObject({
   version: z.number().int().positive().max(Number.MAX_SAFE_INTEGER),
-  kind: z.enum(["risk_policy", "account_baseline", "trade_plan", "risk_recovery", "live_activation"]),
+  kind: z.enum(["risk_policy", "account_baseline", "trade_plan", "risk_recovery", "live_activation", "standing_authorization"]),
   scopeId: reference, accountRef: z.string().regex(/^account:[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/),
   site: z.enum(["global", "eea", "us", "tr"]), environment: z.enum(["demo", "live"]),
   payload: z.record(z.string(), z.unknown()), expiresAt: z.iso.datetime({ offset: true }),

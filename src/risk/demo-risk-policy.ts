@@ -6,6 +6,7 @@ import { getRow, inTransaction, type Db } from '../store/db.ts';
 import { parseConfirmationProposal, type ConfirmationSubject } from '../control/confirmation-schema.ts';
 import type { createConfirmationService } from '../control/confirmations.ts';
 import type { createDemoAccountSession } from '../account/demo-session.ts';
+import { verifiedDemoSnapshot, type DemoSnapshot } from '../account/demo-snapshot.ts';
 
 const ref = z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/);
 // At most 40 characters per operand: 40 integer digits plus 38 fractional digits and a carry fit within 100 significant digits.
@@ -20,7 +21,6 @@ const policySchema = z.strictObject({id:ref,version:count.refine(v=>v>0),initial
 }).refine(p=>new BudgetDecimal(p.budgetsUsdt.reserve).plus(p.budgetsUsdt.spot).plus(p.budgetsUsdt.perpetual).lte(new BudgetDecimal(p.initialEquityUsdt)) && dec(p.lossLinesUsdt.review).lt(dec(p.lossLinesUsdt.pause)) && dec(p.lossLinesUsdt.pause).lt(dec(p.lossLinesUsdt.stop)));
 const inputSchema = z.strictObject({proposalId:ref,policy:policySchema,expiresAt:z.iso.datetime({offset:true})});
 type Row = { id:string; request_id:string; subject_json:string; subject_hash:string; scope_id:string; account_ref:string; site:string; policy_id:string; version:number };
-type Snapshot = NonNullable<ReturnType<ReturnType<typeof createDemoAccountSession>['getInternalSnapshot']>>;
 function fail(): never { throw new DomainError('INVALID_INPUT','Demo risk policy operation rejected',[{ruleId:'demo_policy.rejected'}]); }
 function safe<T>(f:()=>T):T { try{return f()}catch{ return fail() } }
 const tables = [
@@ -32,13 +32,7 @@ const tables = [
 export function createDemoRiskPolicyService(db:Db, session:Pick<ReturnType<typeof createDemoAccountSession>,'getInternalSnapshot'>, confirmations:ReturnType<typeof createConfirmationService>, now:()=>Date) {
  safe(()=>inTransaction(db,()=>{for(const sql of tables) db.exec(sql)}));
  function clock() { const n=now(); if (!(n instanceof Date) || !Number.isFinite(n.getTime()) || n.getTime()<=0) fail(); return n.getTime(); }
- function check(s:Snapshot|null) {
-  if (!s || s.environment!=='demo' || s.reconciled!==false || s.executionAuthorized!==false || s.blockNewRisk!==true || !Number.isSafeInteger(s.generation) || !Number.isFinite(s.validUntilMs) || clock()>s.validUntilMs) fail();
-  const binding=getRow<{account_ref:string;site:string;environment:string}>(db,'SELECT account_ref,site,environment FROM demo_account_scopes WHERE scope_id=?',s.scopeId);
-  const event=getRow<{seq:number;status:string}>(db,'SELECT seq,status FROM demo_account_refresh_events WHERE scope_id=? ORDER BY seq DESC LIMIT 1',s.scopeId);
-  if (!binding || binding.account_ref!==s.accountRef || binding.site!==s.site || binding.environment!=='demo' || event?.seq!==s.generation || event.status!=='ok' || getRow(db,'SELECT scope_id FROM demo_account_identity_conflicts WHERE scope_id=?',s.scopeId)) fail();
-  return s;
- }
+ const check=(s:DemoSnapshot|null)=>verifiedDemoSnapshot(db,s,clock());
  function load(id:string) { const row=getRow<Row>(db,'SELECT * FROM demo_risk_policy_proposals WHERE id=?',id); if(!row) fail(); return row; }
  function subject(row:Row) {
   const s=parseConfirmationProposal({requestRef:'integrity',subject:JSON.parse(row.subject_json)}).subject;
