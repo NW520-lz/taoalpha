@@ -1,0 +1,34 @@
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+import { reconcileDemoAccount } from '../../src/account/demo-reconciliation.ts';
+
+const page = (endpoint: string, rows: Record<string, unknown>[]) => ({ status: 'ok' as const, pages: [{ endpoint, requestTime: '2026-11-02T10:00:00Z', rows }] });
+// Synthetic exchange rows only (OKX field names: clOrdId, algoClOrdId, accFillSz).
+function snapshot(over: Record<string, unknown> = {}) {
+ return { scope: { scopeId: 'scope:synthetic', site: 'global', environment: 'demo' }, accountReadComplete: true, reconciled: false, executionAuthorized: false, missing: ['capital_history', 'managed_ownership', 'auto_add_margin_verification'],
+  parts: { config: page('GET /api/v5/account/config', []), balance: page('GET /api/v5/account/balance', []), positions: page('GET /api/v5/account/positions', []),
+   spotOrders: page('GET /api/v5/trade/orders-pending', []), perpetualOrders: page('GET /api/v5/trade/orders-pending', []),
+   spotProtection: page('GET /api/v5/trade/orders-algo-pending', []), perpetualProtection: page('GET /api/v5/trade/orders-algo-pending', []), ...over } } as never;
+}
+const accountOk = { ok: true, readsComplete: true, account: { positions: [] } } as never;
+const intent = { intentId: 'intent_one', instId: 'BTC-USDT', actions: [{ role: 'entry', clientOrderId: 'taeA' }, { role: 'initial_stop', clientOrderId: 'tasA' }, { role: 'trailing_stop', clientOrderId: 'tatA' }] };
+
+test('a complete read with only our own orders, each filled entry protected, does not block', () => {
+ const snap = snapshot({ spotOrders: page('GET /api/v5/trade/orders-pending', [{ instId: 'BTC-USDT', clOrdId: 'taeA', state: 'partially_filled', accFillSz: '0.1' }]),
+  spotProtection: page('GET /api/v5/trade/orders-algo-pending', [{ instId: 'BTC-USDT', algoClOrdId: 'tasA', state: 'live' }, { instId: 'BTC-USDT', algoClOrdId: 'tatA', state: 'live' }]) });
+ const result = reconcileDemoAccount({ snapshot: snap, account: accountOk, intents: [intent] });
+ assert.deepEqual([result.blockNewRisk, result.reasons, result.unmanagedOrders], [false, [], 0]);
+ assert.deepEqual(result.intents, [{ intentId: 'intent_one', entry: 'partially_filled', initialStop: 'live', trailingStop: 'live' }]);
+ // No blocking discrepancy, yet the account is not reconciled while these facts remain unread.
+ assert.deepEqual([result.accountReconciled, result.gaps], [false, ['capital_history', 'managed_spot_ownership', 'filled_entry_history']]);
+});
+
+test('incomplete reads, foreign orders, perpetual positions and a filled entry without a stop all block', () => {
+ const reasons = (snap: unknown, account: unknown = accountOk) => reconcileDemoAccount({ snapshot: snap as never, account: account as never, intents: [intent] }).reasons;
+ assert.deepEqual(reasons(snapshot({ balance: { status: 'unavailable', reason: 'read_failed_or_incomplete' } })), ['reconcile.read_incomplete']);
+ assert.deepEqual(reasons(snapshot(), { ok: false, readsComplete: true }), ['reconcile.read_incomplete']);
+ assert.deepEqual(reasons(snapshot({ spotOrders: page('GET /api/v5/trade/orders-pending', [{ instId: 'ETH-USDT', clOrdId: 'manual1', state: 'live', accFillSz: '0' }]) })), ['reconcile.unmanaged_order']);
+ assert.deepEqual(reasons(snapshot({ perpetualProtection: page('GET /api/v5/trade/orders-algo-pending', [{ instId: 'BTC-USDT-SWAP', algoClOrdId: '', state: 'live' }]) })), ['reconcile.unmanaged_order']);
+ assert.deepEqual(reasons(snapshot(), { ok: true, readsComplete: true, account: { positions: [{ instrumentId: 'BTC-USDT-SWAP', contracts: '1' }] } }), ['reconcile.unmanaged_position']);
+ assert.deepEqual(reasons(snapshot({ spotOrders: page('GET /api/v5/trade/orders-pending', [{ instId: 'BTC-USDT', clOrdId: 'taeA', state: 'partially_filled', accFillSz: '0.1' }]) })), ['reconcile.protection_missing']);
+});
