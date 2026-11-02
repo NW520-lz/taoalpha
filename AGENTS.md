@@ -1,6 +1,6 @@
 # TaoAlpha 项目协作约定
 
-本文件适用于仓库内所有目录。当前仓库处于**工程设计阶段**：已有文档，没有可运行的交易后端。任何 Agent 都不得把文档中的计划描述成已经实现、通过模拟验收或可用于实盘。
+本文件适用于仓库内所有目录。当前仓库已实现 **M0 只读研究代码**，M1 风控及 demo 只读接入正在开发，已有 CLI、公开行情扫描、证据存储、分阶段研究任务、不可执行候选草稿及相关测试文件。任何 Agent 都不得把文件存在或文档中的计划描述成已经通过端到端研究、策略验证、模拟验收或可用于实盘；完成状态必须附带真实运行证据。
 
 ## 开始工作
 
@@ -8,6 +8,8 @@
 2. 对改动说明目标、受影响边界、验证证据与尚未验证的部分。不要用模型判断代替交易所状态、账本计算或真实测试结果。
 3. 先检查工作区状态，保留与任务无关的改动。提交只包含本次审阅过的文件，不把本机配置、密钥、数据库或个人交易资料加入 Git。
 4. 若改动改变模块边界、资金计算、授权或异常处置，同步更新上述对应文档；实现与文档冲突时先查明原因，不静默删除约束。
+5. 涉及选币、研究角色、哲学方法、策略验证或复盘时，读取[交易研究与学习闭环规格](docs/STRATEGY_RESEARCH_SPEC.md)。其中的候选方向和待定参数不构成已验证策略；按 MR-01—MR-12 记录实际覆盖。
+6. 跨模块改动若本机可用 CodeGraph，先执行 `codegraph status`，索引落后时运行 `codegraph sync`，再用 `codegraph explore` / `codegraph impact` 核对调用关系；静态入口见[代码地图](docs/CODEGRAPH_MAP.md)。本地 `.codegraph/` 不入 Git。
 
 ## 交易与权限边界
 
@@ -28,3 +30,17 @@
 - 后续如需生图或生产视频，直接使用用户指定的**至简未来 skills**；此规则仅在相应媒体任务发生时适用。
 
 仓库对外只公布通用产品与工程资料。用户本机的 `.scratch/` 设计材料包含个人背景，仅作为本机参考，不是公开仓库的交付物。
+
+## Agent skills
+
+### Issue tracker
+
+工单以本地 Markdown 存放在 `.scratch/<feature>/issues/`（被 Git 忽略，仅本机）。见 `docs/agents/issue-tracker.md`。
+
+### Triage labels
+
+使用五个默认角色标签（needs-triage、needs-info、ready-for-agent、ready-for-human、wontfix），写在工单的 `Status:` 行。见 `docs/agents/triage-labels.md`。
+
+### Domain docs
+
+单上下文：根目录 `GLOSSARY.md`（尚未创建），架构决策在 `docs/DECISIONS.md`，约束在 `docs/INVARIANTS.md`。见 `docs/agents/domain.md`。
