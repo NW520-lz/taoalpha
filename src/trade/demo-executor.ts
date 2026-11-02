@@ -1,4 +1,5 @@
 import { DomainError } from '../lib/errors.ts';
+import { sha256 } from '../lib/hash.ts';
 import { getRow, inTransaction, type Db } from '../store/db.ts';
 import { dec } from '../risk/risk-decimal.ts';
 import type { TradeCard } from './veto-window.ts';
@@ -9,13 +10,15 @@ export type WriteOutcome = { status: 'accepted'; exchangeId: string } | { status
 export interface DemoWriter {
  placeEntry(args: Record<string, string>): Promise<WriteOutcome>;
  placeAlgo(args: Record<string, string>): Promise<WriteOutcome>;
+ cancelOrder(args: Record<string, string>): Promise<WriteOutcome>;
 }
 type Intent = { intentId: string; cardHash: string; instId: string; baseQuantity: string; actions: Array<{ role: string; clientOrderId: string }> };
 type Recorded = { status: 'sending' | 'accepted' | 'rejected' | 'unknown'; exchangeId: string | null; code: string | null };
 
-const TABLES = ['execution_submissions', 'execution_outcomes'];
+const TABLES = ['execution_submissions', 'execution_outcomes', 'execution_risk_locks'];
 const DDL = [
  `CREATE TABLE IF NOT EXISTS execution_submissions(client_order_id TEXT PRIMARY KEY,intent_id TEXT NOT NULL,role TEXT NOT NULL,args_json TEXT NOT NULL,sent_at TEXT NOT NULL)`,
+ `CREATE TABLE IF NOT EXISTS execution_risk_locks(intent_id TEXT NOT NULL,reason TEXT NOT NULL,locked_at TEXT NOT NULL,PRIMARY KEY(intent_id,reason))`,
  `CREATE TABLE IF NOT EXISTS execution_outcomes(client_order_id TEXT PRIMARY KEY REFERENCES execution_submissions(client_order_id),status TEXT NOT NULL,exchange_id TEXT,code TEXT,recorded_at TEXT NOT NULL)`,
  ...TABLES.flatMap(t => [`CREATE TRIGGER IF NOT EXISTS ${t}_no_update BEFORE UPDATE ON ${t} BEGIN SELECT RAISE(ABORT,'immutable'); END`, `CREATE TRIGGER IF NOT EXISTS ${t}_no_delete BEFORE DELETE ON ${t} BEGIN SELECT RAISE(ABORT,'immutable'); END`]),
 ];
@@ -59,6 +62,8 @@ export function createDemoExecutor(db: Db, writer: DemoWriter, now: () => Date) 
    const { intent, card } = load(intentId);
    const entryId = intent.actions.find(a => a.role === 'entry')!.clientOrderId;
    const prior = recorded(entryId); if (prior) return view(prior);
+   // Any unresolved disposition lock (I-15/I-17) stops every new entry, not only this intent's.
+   if (getRow(db, 'SELECT 1 FROM execution_risk_locks LIMIT 1')) return { status: 'blocked' as const, exchangeId: null, code: null, reasons: ['execution.risk_locked'] };
    // I-04 pre-submit recheck: the approval is not a reason to trade on a stale picture.
    const at = now().getTime(), blocked = (reason: string) => ({ status: 'blocked' as const, exchangeId: null, code: null, reasons: [reason] });
    if (at >= Date.parse(card.expiresAt)) return blocked('execution.card_expired');
@@ -69,6 +74,25 @@ export function createDemoExecutor(db: Db, writer: DemoWriter, now: () => Date) 
    if (dec(checks.quote.priceUsdt).minus(reference).abs().div(reference).times(1_000_000).gt(checks.maxPriceDeviationPpm)) return blocked('execution.price_moved');
    const args = { instId: intent.instId, tdMode: 'cash', side: 'buy', ordType: 'market', sz: intent.baseQuantity, tgtCcy: 'base_ccy', clOrdId: entryId };
    return view(await sendOnce(intentId, 'entry', entryId, args, writer.placeEntry));
+  },
+  /** Persistent and idempotent; there is no unlock here (recovery needs its own confirmed event, I-15). */
+  lockNewRisk(intentId: string, reason: string) {
+   inTransaction(db, () => { if (!getRow(db, 'SELECT 1 FROM execution_risk_locks WHERE intent_id=? AND reason=?', intentId, reason)) db.prepare('INSERT INTO execution_risk_locks VALUES(?,?,?)').run(intentId, reason, now().toISOString()); });
+  },
+  riskLocks() { return (db.prepare('SELECT intent_id, reason, locked_at FROM execution_risk_locks ORDER BY rowid').all() as Array<{ intent_id: string; reason: string; locked_at: string }>).map(r => ({ intentId: r.intent_id, reason: r.reason, lockedAt: r.locked_at })); },
+  /** Cancels whatever of this intent's entry is still open, by its client order id, once. */
+  async cancelRemainingEntry(intentId: string) {
+   const { intent } = load(intentId), entryId = intent.actions.find(a => a.role === 'entry')!.clientOrderId;
+   return sendOnce(intentId, 'cancel_entry', `cancel-${entryId}`, { instId: intent.instId, clOrdId: entryId }, writer.cancelOrder);
+  },
+  /** Sells only what this intent holds, at market, with a client order id derived from its card, once. */
+  async exitIntentExposure(intentId: string, holding: { heldQty: string; lotSz: string }) {
+   const { intent } = load(intentId);
+   const sz = dec(holding.heldQty).divToInt(holding.lotSz).times(holding.lotSz);
+   if (!sz.gt(0)) fail('execution.nothing_to_exit');
+   const clientOrderId = `tax${sha256(`${intent.cardHash}:exit`).slice(0, 28)}`;
+   const args = { instId: intent.instId, tdMode: 'cash', side: 'sell', ordType: 'market', sz: sz.toFixed(), tgtCcy: 'base_ccy', clOrdId: clientOrderId };
+   return { ...(await sendOnce(intentId, 'exit', clientOrderId, args, writer.placeEntry)), clientOrderId };
   },
   /** After the entry filled: the initial stop and the frozen trailing stop on the base quantity actually held. */
   async placeProtection(intentId: string, fill: { accFillSz: string; fee: string; feeCcy: string; lotSz: string }) {

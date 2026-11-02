@@ -31,6 +31,7 @@ function setup(outcome: (call: string, args: Record<string, unknown>) => WriteOu
  const writer: DemoWriter = {
   placeEntry: async (args) => { calls.push({ call: 'entry', args }); return outcome('entry', args); },
   placeAlgo: async (args) => { calls.push({ call: String(args.ordType), args }); return outcome(String(args.ordType), args); },
+  cancelOrder: async (args) => { calls.push({ call: 'cancel', args }); return outcome('cancel', args); },
  };
  return { db, clock, card, intent, calls, executor: createDemoExecutor(db, writer, () => clock.now) };
 }
@@ -100,5 +101,41 @@ test('protection is refused before an accepted entry, and sending records cannot
   await assert.rejects(executor.placeProtection(intent.intentId, { accFillSz: '0.2328', fee: '0', feeCcy: 'USDT', lotSz: '0.0001' }), (e: { violations?: Array<{ ruleId: string }> }) => e.violations?.[0]?.ruleId === 'execution.entry_not_accepted');
   await executor.submitEntry(intent.intentId, checks());
   assert.throws(() => db.prepare('DELETE FROM execution_submissions').run());
+ } finally { db.close(); }
+});
+
+test('a disposition lock blocks every new entry; cancel and exit are sent once and touch only this intent', async () => {
+ const { db, clock, intent, calls, executor } = setup(); try {
+  clock.now = at(602); await executor.submitEntry(intent.intentId, checks());
+  executor.lockNewRisk(intent.intentId, 'protection_missing');
+  assert.deepEqual(executor.riskLocks().map(l => [l.intentId, l.reason]), [[intent.intentId, 'protection_missing']]);
+  const cancel = await executor.cancelRemainingEntry(intent.intentId);
+  const exit = await executor.exitIntentExposure(intent.intentId, { heldQty: '0.23256', lotSz: '0.0001' });
+  assert.deepEqual([cancel.status, exit.status], ['accepted', 'accepted']);
+  assert.deepEqual(calls.slice(1).map(c => [c.call, c.args]), [
+   ['cancel', { instId: 'BTC-USDT', clOrdId: intent.actions[0]!.clientOrderId }],
+   ['entry', { instId: 'BTC-USDT', tdMode: 'cash', side: 'sell', ordType: 'market', sz: '0.2325', tgtCcy: 'base_ccy', clOrdId: exit.clientOrderId }],
+  ]);
+  assert.match(exit.clientOrderId, /^tax[0-9a-f]{28}$/);
+  await executor.exitIntentExposure(intent.intentId, { heldQty: '0.23256', lotSz: '0.0001' }); await executor.cancelRemainingEntry(intent.intentId);
+  assert.equal(calls.length, 3);
+  assert.throws(() => db.prepare('DELETE FROM execution_risk_locks').run());
+ } finally { db.close(); }
+});
+
+test('while any risk lock exists, the pre-submit recheck refuses new entries', async () => {
+ const { db, clock, intent, calls, executor } = setup(); try {
+  clock.now = at(602);
+  executor.lockNewRisk('intent_other', 'protection_missing');
+  assert.deepEqual((await executor.submitEntry(intent.intentId, checks())).reasons, ['execution.risk_locked']);
+  assert.equal(calls.length, 0);
+ } finally { db.close(); }
+});
+
+test('an exit below one lot is refused and sends nothing', async () => {
+ const { db, clock, intent, calls, executor } = setup(); try {
+  clock.now = at(602); await executor.submitEntry(intent.intentId, checks());
+  await assert.rejects(executor.exitIntentExposure(intent.intentId, { heldQty: '0.00005', lotSz: '0.0001' }), (e: { violations?: Array<{ ruleId: string }> }) => e.violations?.[0]?.ruleId === 'execution.nothing_to_exit');
+  assert.equal(calls.length, 1);
  } finally { db.close(); }
 });
