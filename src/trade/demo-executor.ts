@@ -16,10 +16,11 @@ export interface DemoWriter {
 type Intent = { intentId: string; cardHash: string; instId: string; baseQuantity: string; actions: Array<{ role: string; clientOrderId: string }> };
 type Recorded = { status: 'sending' | 'accepted' | 'rejected' | 'unknown'; exchangeId: string | null; code: string | null };
 
-const TABLES = ['execution_submissions', 'execution_outcomes', 'execution_risk_locks'];
+const TABLES = ['execution_submissions', 'execution_outcomes', 'execution_risk_locks', 'execution_risk_unlocks'];
 const DDL = [
  `CREATE TABLE IF NOT EXISTS execution_submissions(client_order_id TEXT PRIMARY KEY,intent_id TEXT NOT NULL,role TEXT NOT NULL,args_json TEXT NOT NULL,sent_at TEXT NOT NULL)`,
  `CREATE TABLE IF NOT EXISTS execution_risk_locks(intent_id TEXT NOT NULL,reason TEXT NOT NULL,locked_at TEXT NOT NULL,PRIMARY KEY(intent_id,reason))`,
+ `CREATE TABLE IF NOT EXISTS execution_risk_unlocks(intent_id TEXT NOT NULL,reason TEXT NOT NULL,receipt_id TEXT UNIQUE NOT NULL,unlocked_at TEXT NOT NULL,PRIMARY KEY(intent_id,reason))`,
  `CREATE TABLE IF NOT EXISTS execution_outcomes(client_order_id TEXT PRIMARY KEY REFERENCES execution_submissions(client_order_id),status TEXT NOT NULL,exchange_id TEXT,code TEXT,recorded_at TEXT NOT NULL)`,
  ...TABLES.flatMap(t => [`CREATE TRIGGER IF NOT EXISTS ${t}_no_update BEFORE UPDATE ON ${t} BEGIN SELECT RAISE(ABORT,'immutable'); END`, `CREATE TRIGGER IF NOT EXISTS ${t}_no_delete BEFORE DELETE ON ${t} BEGIN SELECT RAISE(ABORT,'immutable'); END`]),
 ];
@@ -64,7 +65,7 @@ export function createDemoExecutor(db: Db, writer: DemoWriter, now: () => Date) 
    const entryId = intent.actions.find(a => a.role === 'entry')!.clientOrderId;
    const prior = recorded(entryId); if (prior) return view(prior);
    // Any unresolved disposition lock (I-15/I-17) stops every new entry, not only this intent's.
-   if (getRow(db, 'SELECT 1 FROM execution_risk_locks LIMIT 1')) return { status: 'blocked' as const, exchangeId: null, code: null, reasons: ['execution.risk_locked'] };
+   if (getRow(db, 'SELECT 1 FROM execution_risk_locks l WHERE NOT EXISTS (SELECT 1 FROM execution_risk_unlocks u WHERE u.intent_id=l.intent_id AND u.reason=l.reason) LIMIT 1')) return { status: 'blocked' as const, exchangeId: null, code: null, reasons: ['execution.risk_locked'] };
    // I-04 pre-submit recheck: the approval is not a reason to trade on a stale picture.
    const at = now().getTime(), blocked = (reason: string) => ({ status: 'blocked' as const, exchangeId: null, code: null, reasons: [reason] });
    if (at >= Date.parse(card.expiresAt)) return blocked('execution.card_expired');
@@ -77,11 +78,11 @@ export function createDemoExecutor(db: Db, writer: DemoWriter, now: () => Date) 
    const args = { instId: intent.instId, tdMode: 'cash', side: 'buy', ordType: 'market', sz: intent.baseQuantity, tgtCcy: 'base_ccy', clOrdId: entryId };
    return view(await sendOnce(intentId, 'entry', entryId, args, writer.placeEntry));
   },
-  /** Persistent and idempotent; there is no unlock here (recovery needs its own confirmed event, I-15). */
+  /** Persistent and idempotent. Only a user-confirmed recovery of this one lock lifts it (I-15, control/risk-recovery.ts). */
   lockNewRisk(intentId: string, reason: string) {
    inTransaction(db, () => { if (!getRow(db, 'SELECT 1 FROM execution_risk_locks WHERE intent_id=? AND reason=?', intentId, reason)) db.prepare('INSERT INTO execution_risk_locks VALUES(?,?,?)').run(intentId, reason, now().toISOString()); });
   },
-  riskLocks() { return (db.prepare('SELECT intent_id, reason, locked_at FROM execution_risk_locks ORDER BY rowid').all() as Array<{ intent_id: string; reason: string; locked_at: string }>).map(r => ({ intentId: r.intent_id, reason: r.reason, lockedAt: r.locked_at })); },
+  riskLocks() { return (db.prepare('SELECT intent_id, reason, locked_at FROM execution_risk_locks l WHERE NOT EXISTS (SELECT 1 FROM execution_risk_unlocks u WHERE u.intent_id=l.intent_id AND u.reason=l.reason) ORDER BY rowid').all() as Array<{ intent_id: string; reason: string; locked_at: string }>).map(r => ({ intentId: r.intent_id, reason: r.reason, lockedAt: r.locked_at })); },
   /** Cancels whatever of this intent's entry is still open, by its client order id, once. */
   async cancelRemainingEntry(intentId: string) {
    const { intent } = load(intentId), entryId = intent.actions.find(a => a.role === 'entry')!.clientOrderId;

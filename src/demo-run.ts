@@ -7,6 +7,8 @@ import { createConfirmationService } from './control/confirmations.ts';
 import { createWindowsPresence } from './control/windows-presence.ts';
 import { createStandingAuthorizationService } from './control/standing-authorization.ts';
 import { createVetoDisplay } from './control/veto-display.ts';
+import { createRiskRecoveryService } from './control/risk-recovery.ts';
+import { createDemoExecutor } from './trade/demo-executor.ts';
 import { createDemoRiskPolicyService } from './risk/demo-risk-policy.ts';
 import { createExperimentRegistry } from './research/experiment-registry.ts';
 import { createPublicClient } from './okx/public-client.ts';
@@ -15,7 +17,7 @@ import type { DemoSite } from './okx/trade-kit-demo-reader.ts';
 import { PIPELINE_STRATEGY } from './trade/pipeline-signal.ts';
 import { reconcileScope, runDemoCycle, type AccountRead, type CycleDeps, type Market } from './trade/demo-cycle.ts';
 
-// Usage: npm run demo:run -- <setup|cycle|status|revoke> --profile taoalpha_demo --site global [--policy file] [--grant file]
+// Usage: npm run demo:run -- <setup|cycle|status|revoke|unlock> --profile taoalpha_demo --site global [--policy file] [--grant file]
 // Demo only. Credentials stay in ~/.okx/config.toml and in the Trade Kit child process; output carries no amounts.
 const { values, positionals } = parseArgs({ allowPositionals: true, options: { profile: { type: 'string' }, site: { type: 'string' }, policy: { type: 'string' }, grant: { type: 'string' } } });
 const command = positionals[0], profile = values.profile ?? 'taoalpha_demo', site = (values.site ?? 'global') as DemoSite;
@@ -82,12 +84,27 @@ try {
   const active = grants.internalActive();
   const inst = active ? (await market()).instrument : null;
   const recon = active ? await reconcileScope(db, await readAccount(), active, Date.now(), { [inst!.baseCcy]: inst!.minSz }) : null;
-  print({ standingGrant: active ? { proposalId: active.proposalId, validUntil: active.grant.validUntil, vetoWindowSeconds: active.grant.vetoWindowSeconds } : null,
+  const locks = createDemoExecutor(db, { placeEntry: async () => ({ status: 'unknown' }), placeAlgo: async () => ({ status: 'unknown' }), cancelOrder: async () => ({ status: 'unknown' }), cancelAlgo: async () => ({ status: 'unknown' }) }, now).riskLocks();
+  print({ riskLocks: locks.map(l => ({ intentId: l.intentId, reason: l.reason, lockedAt: l.lockedAt })), standingGrant: active ? { proposalId: active.proposalId, validUntil: active.grant.validUntil, vetoWindowSeconds: active.grant.vetoWindowSeconds } : null,
    reconciliation: recon && { blockNewRisk: recon.blockNewRisk, reasons: recon.reasons, intents: recon.intents } });
+ } else if (command === 'unlock') {
+  // I-15: each lock separately, each confirmed with Windows Hello; only exited intents can be unlocked.
+  const recovery = createRiskRecoveryService(db, confirmations, now);
+  const noWriter = { placeEntry: async () => ({ status: 'unknown' as const }), placeAlgo: async () => ({ status: 'unknown' as const }), cancelOrder: async () => ({ status: 'unknown' as const }), cancelAlgo: async () => ({ status: 'unknown' as const }) };
+  const snapshot = session.getInternalSnapshot();
+  const results = [];
+  for (const lock of createDemoExecutor(db, noWriter, now).riskLocks()) {
+   try {
+    const proposal = recovery.propose({ scopeId: SCOPE, accountRef: snapshot!.accountRef, site, environment: 'demo' }, lock);
+    const decision = await confirmations.reviewAndConfirm(proposal.requestId);
+    results.push({ intentId: lock.intentId, reason: lock.reason, result: decision.status === 'verified' && decision.receiptId ? recovery.confirm(proposal.proposalId, decision.receiptId).status : decision.status });
+   } catch (e) { results.push({ intentId: lock.intentId, reason: lock.reason, result: (e as { violations?: Array<{ ruleId: string }> }).violations?.[0]?.ruleId ?? 'failed' }); }
+  }
+  print({ unlock: results });
  } else if (command === 'revoke') {
   const active = grants.internalActive();
   print(active ? grants.revoke(active.proposalId) : { status: 'no_active_grant' });
- } else { print({ ok: false, usage: 'npm run demo:run -- <setup|cycle|status|revoke> --profile taoalpha_demo --site global' }); process.exitCode = 2; }
+ } else { print({ ok: false, usage: 'npm run demo:run -- <setup|cycle|status|revoke|unlock> --profile taoalpha_demo --site global' }); process.exitCode = 2; }
 } finally {
  for (const r of readers) await r.close().catch(() => {});
  db.close();
