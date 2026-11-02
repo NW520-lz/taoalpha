@@ -4,7 +4,7 @@ import { TRADE_KIT_VERSION, type TradeKitPeer } from '../../src/okx/trade-kit-de
 import { createDemoWriteSession } from '../../src/okx/trade-kit-demo-writer.ts';
 
 const scope = { scopeId: 'synthetic-demo-scope', site: 'global' as const, environment: 'demo' as const };
-const endpoints: Record<string, string> = { spot_place_order: 'POST /api/v5/trade/order', spot_place_algo_order: 'POST /api/v5/trade/order-algo', spot_cancel_order: 'POST /api/v5/trade/cancel-order' };
+const endpoints: Record<string, string> = { spot_place_order: 'POST /api/v5/trade/order', spot_place_algo_order: 'POST /api/v5/trade/order-algo', spot_cancel_order: 'POST /api/v5/trade/cancel-order', spot_cancel_algo_order: 'POST /api/v5/trade/cancel-algos' };
 
 function fakePeer(options: { demo?: boolean; readOnly?: boolean; version?: string; reply?: (name: string, args: Record<string, unknown>) => unknown } = {}) {
  const caps = { demo: options.demo ?? true, readOnly: options.readOnly ?? false, hasAuth: true };

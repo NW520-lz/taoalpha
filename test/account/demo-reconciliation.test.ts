@@ -15,7 +15,7 @@ const accountOk = { ok: true, readsComplete: true, account: { positions: [], equ
 const intent = { intentId: 'intent_one', instId: 'BTC-USDT', actions: [{ role: 'entry', clientOrderId: 'taeA' }, { role: 'initial_stop', clientOrderId: 'tasA' }, { role: 'trailing_stop', clientOrderId: 'tatA' }] };
 const NOW = Date.parse('2026-11-02T10:00:00Z'), DAY = 86_400_000;
 const full = (over: Record<string, unknown> = {}) => ({ snapshot: snapshot(), account: accountOk, intents: [intent], now: NOW,
- capital: { sinceMs: NOW - DAY, recordedBillIds: [] as string[] }, submittedIntentIds: [] as string[], entryLookups: {}, managedHoldings: {}, ...over });
+ capital: { sinceMs: NOW - DAY, recordedBillIds: [] as string[] }, submittedIntentIds: [] as string[], entryLookups: {}, managedHoldings: {}, cleanCurrencies: {}, triggeredAlgoClientIds: [] as string[], ...over });
 
 test('a complete read with only our own orders, each filled entry protected, does not block', () => {
  const snap = snapshot({ spotOrders: page('GET /api/v5/trade/orders-pending', [{ instId: 'BTC-USDT', clOrdId: 'taeA', state: 'partially_filled', accFillSz: '0.1' }]),
@@ -65,4 +65,19 @@ test('managed spot holdings must be covered by the coin balance; extra coins are
  assert.deepEqual([ok.reasons, ok.gaps, ok.accountReconciled], [[], [], true]);
  assert.deepEqual(run('0.2', { BTC: '0.2325' }).reasons, ['reconcile.managed_holding_missing']);
  assert.deepEqual(run('0', { ETH: '1' }).reasons, ['reconcile.managed_holding_missing']);
+});
+
+test('a granted base currency may hold only managed coins (plus sub-minimum dust), so a second stop can never sell other coins', () => {
+ const withBalance = (eq: string) => ({ ok: true, readsComplete: true, account: { positions: [], equity: { assets: [{ currency: 'BTC', equity: { amount: eq, unit: 'coin' } }] } } });
+ const run = (eq: string, managed: Record<string, string>) => reconcileDemoAccount(full({ account: withBalance(eq), managedHoldings: managed, cleanCurrencies: { BTC: '0.00001' } }) as never).reasons;
+ assert.deepEqual(run('0.2325', { BTC: '0.2325' }), []);
+ assert.deepEqual(run('0.232505', { BTC: '0.2325' }), []);
+ assert.deepEqual(run('1.2325', { BTC: '0.2325' }), ['reconcile.unmanaged_holding']);
+ assert.deepEqual(run('0.5', {}), ['reconcile.unmanaged_holding']);
+});
+
+test('an intent whose initial or trailing stop triggered has exited: no missing-protection block and no managed holding', () => {
+ const filled = { status: 'found', row: { clOrdId: 'taeA', state: 'filled', accFillSz: '0.2', fee: '0', feeCcy: 'USDT' } };
+ const r = reconcileDemoAccount(full({ submittedIntentIds: ['intent_one'], entryLookups: { intent_one: filled }, triggeredAlgoClientIds: ['tasA'] }) as never);
+ assert.deepEqual([r.reasons, r.intents[0]!.initialStop, r.exitedIntentIds], [[], 'triggered', ['intent_one']]);
 });

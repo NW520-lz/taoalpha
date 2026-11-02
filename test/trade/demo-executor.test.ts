@@ -32,6 +32,7 @@ function setup(outcome: (call: string, args: Record<string, unknown>) => WriteOu
   placeEntry: async (args) => { calls.push({ call: 'entry', args }); return outcome('entry', args); },
   placeAlgo: async (args) => { calls.push({ call: String(args.ordType), args }); return outcome(String(args.ordType), args); },
   cancelOrder: async (args) => { calls.push({ call: 'cancel', args }); return outcome('cancel', args); },
+  cancelAlgo: async (args) => { calls.push({ call: 'cancel_algo', args }); return outcome('cancel_algo', args); },
  };
  return { db, clock, card, intent, calls, executor: createDemoExecutor(db, writer, () => clock.now) };
 }

@@ -51,7 +51,7 @@ async function market(): Promise<Market> {
 async function readAccount(): Promise<AccountRead> {
  const reader = await connectTradeKitDemoReader({ scopeId: SCOPE, profile, site }); readers.push(reader);
  const snapshot = await reader.refresh();
- return { snapshot, account: normalizeDemoAccount(snapshot, now()), orderByClientId: (instId, clOrdId) => reader.orderByClientId(instId, clOrdId) };
+ return { snapshot, account: normalizeDemoAccount(snapshot, now()), orderByClientId: (instId, clOrdId) => reader.orderByClientId(instId, clOrdId), triggeredAlgos: (instId) => reader.triggeredAlgos(instId) };
 }
 
 /** Propose, confirm with Windows Hello, refresh the account, then bind the receipt. */

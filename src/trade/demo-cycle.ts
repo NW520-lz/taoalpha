@@ -12,7 +12,7 @@ import { createDemoExecutor, type DemoWriter } from './demo-executor.ts';
 import { pipelineSignal, PIPELINE_STRATEGY } from './pipeline-signal.ts';
 
 type Lookup = { status: 'found'; row: Record<string, unknown> } | { status: 'not_found' };
-export interface AccountRead { snapshot: DemoReadSnapshot; account: DemoAccountResult; orderByClientId(instId: string, clOrdId: string): Promise<Lookup> }
+export interface AccountRead { snapshot: DemoReadSnapshot; account: DemoAccountResult; orderByClientId(instId: string, clOrdId: string): Promise<Lookup>; triggeredAlgos(instId: string): Promise<Array<Record<string, unknown>>> }
 type Instrument = { instId: string; product: 'spot'; baseCcy: string; quoteCcy: 'USDT'; state: string; listTime: string | null; tickSz: string; lotSz: string; minSz: string; ctVal: null };
 export interface Market { candles: Array<{ ts: number; closeTime: number; open: string; high: string; low: string; close: string; confirmed: boolean }>; quote: { priceUsdt: string; at: string; sourceRef: string }; instrument: Instrument }
 type ActiveGrant = { proposalId: string; subjectHash: string; scopeId: string; accountRef: string; site: string; confirmedAt: string; grant: StandingGrant };
@@ -34,14 +34,17 @@ const INST = 'BTC-USDT';
 const COSTS = { feePpm: 1000, slippagePpm: 500, assumptionRef: 'okx-demo-taker-0.10%-plus-0.05%-slippage' };
 
 /** One reconciliation of the account against every intent of the scope, with entry lookups and managed holdings. */
-export async function reconcileScope(db: Db, read: AccountRead, active: ActiveGrant, now: number) {
+export async function reconcileScope(db: Db, read: AccountRead, active: ActiveGrant, now: number, cleanCurrencies: Record<string, string> = {}) {
  const intents = createExecutionIntentService(db, () => new Date(now)).list(active.scopeId);
+ const triggered = new Set((await read.triggeredAlgos(INST)).map(r => String(r.algoClOrdId ?? '')).filter(Boolean));
+ // An intent with a triggered stop has sold its coins, so it holds nothing managed any more.
+ const exited = new Set(intents.filter(i => i.actions.some(a => a.role !== 'entry' && triggered.has(a.clientOrderId))).map(i => i.intentId));
  const hasSubmissions = allRows<{ n: number }>(db, "SELECT count(*) n FROM sqlite_master WHERE name='execution_submissions'")[0]!.n > 0;
  const submitted = new Set(hasSubmissions ? allRows<{ intent_id: string }>(db, "SELECT intent_id FROM execution_submissions WHERE role='entry'").map(r => r.intent_id) : []);
  const open = read.snapshot.parts.spotOrders.status === 'ok' ? read.snapshot.parts.spotOrders.pages.flatMap(p => p.rows) : [];
  const entryLookups: Record<string, Lookup | undefined> = {}, managed: Record<string, string> = {};
  for (const i of intents) {
-  if (!submitted.has(i.intentId)) continue;
+  if (!submitted.has(i.intentId) || exited.has(i.intentId)) continue;
   const entryId = i.actions.find(a => a.role === 'entry')!.clientOrderId;
   let row = open.find(r => r.clOrdId === entryId);
   if (!row) { const lookup = await read.orderByClientId(i.instId, entryId); entryLookups[i.intentId] = lookup; if (lookup.status === 'found') row = lookup.row; }
@@ -49,7 +52,7 @@ export async function reconcileScope(db: Db, read: AccountRead, active: ActiveGr
   if (row) { const held = dec(String(row.accFillSz ?? '0')).plus(row.feeCcy === i.baseCcy ? dec(String(row.fee ?? '0')) : 0); managed[i.baseCcy] = dec(managed[i.baseCcy] ?? '0').plus(held).toFixed(); }
  }
  return reconcileDemoAccount({ snapshot: read.snapshot, account: read.account, intents, now, capital: { sinceMs: Date.parse(active.confirmedAt), recordedBillIds: [] },
-  submittedIntentIds: [...submitted], entryLookups, managedHoldings: managed });
+  submittedIntentIds: [...submitted], entryLookups, managedHoldings: managed, cleanCurrencies, triggeredAlgoClientIds: [...triggered] });
 }
 
 function view(card: TradeCard, seconds: number): VetoCardView {
@@ -79,8 +82,25 @@ export async function runDemoCycle(d: CycleDeps) {
  const market = await d.market();
  const signal = pipelineSignal({ instId: INST, candles: market.candles, evidenceRef: market.quote.sourceRef });
  if (!signal) return stop('signal', ['cycle.not_enough_closed_candles']);
- const recon = await reconcileScope(d.db, await d.readAccount(), active, d.now().getTime());
+ // Each granted base currency may hold only managed coins; dust below the minimum order size cannot be sold anyway.
+ const clean = Object.fromEntries(active.grant.instruments.filter(i => i.instId === market.instrument.instId).map(() => [market.instrument.baseCcy, market.instrument.minSz]));
+ const account = await d.readAccount();
+ const recon = await reconcileScope(d.db, account, active, d.now().getTime(), clean);
  d.log(`reconcile: ${recon.blockNewRisk ? 'blocked ' + recon.reasons.join(',') : 'ok'}`);
+ // Housekeeping: after a stop triggered, cancel the sibling still pending; once none is pending, release the intent.
+ if (recon.exitedIntentIds.length) {
+  const pending = account.snapshot.parts.spotProtection.status === 'ok' ? account.snapshot.parts.spotProtection.pages.flatMap(p => p.rows) : [];
+  const done: string[] = [], cancelled: string[] = [];
+  for (const intent of intents.list(active.scopeId).filter(i => recon.exitedIntentIds.includes(i.intentId))) {
+   const left = intent.actions.filter(a => a.role !== 'entry').map(a => ({ role: a.role as 'initial_stop' | 'trailing_stop', row: pending.find(r => r.algoClOrdId === a.clientOrderId) })).filter(x => x.row);
+   if (!left.length) { intents.markExited(intent.intentId); done.push(intent.intentId); continue; }
+   const writer = await d.openWriter();
+   try { for (const x of left) { const r = await createDemoExecutor(d.db, writer, d.now).cancelProtection(intent.intentId, x.role, String(x.row!.algoId)); cancelled.push(`${x.role}=${r.status}`); } }
+   finally { await writer.close(); }
+  }
+  d.log(`housekeeping: released ${done.length}, cancelled ${cancelled.join(' ') || 'none'}`);
+  return { stage: 'housekeeping', reasons: [], released: done, cancelled };
+ }
  if (recon.blockNewRisk) return stop('reconcile', recon.reasons);
  const compiled = compileDemoCard({ scope: { scopeId: active.scopeId, accountRef: active.accountRef, site: active.site, environment: 'demo' },
   strategy: { id: PIPELINE_STRATEGY.id, version: PIPELINE_STRATEGY.version, validation: 'unvalidated' }, signal,
@@ -111,7 +131,7 @@ export async function runDemoCycle(d: CycleDeps) {
  // Open the writer first, so the re-check and the quote are as fresh as possible when the entry is sent.
  const writer = await d.openWriter();
  try {
-  const fresh = await reconcileScope(d.db, await d.readAccount(), active, d.now().getTime());
+  const fresh = await reconcileScope(d.db, await d.readAccount(), active, d.now().getTime(), clean);
   const quote = (await d.market()).quote;
   const executor = createDemoExecutor(d.db, writer, d.now);
   const entry = await executor.submitEntry(intent.intentId, { reconciliation: fresh, quote, maxQuoteAgeSeconds: 30, maxPriceDeviationPpm: 10_000 });
@@ -126,7 +146,7 @@ export async function runDemoCycle(d: CycleDeps) {
   if (!fill) return { stage: 'fill', reasons: ['cycle.fill_not_confirmed'], intentId: intent.intentId };
   const protection = await executor.placeProtection(intent.intentId, { accFillSz: String(fill.accFillSz), fee: String(fill.fee ?? '0'), feeCcy: String(fill.feeCcy ?? ''), lotSz: market.instrument.lotSz });
   d.log(`protection: ${protection.map(p => `${p.role}=${p.status}`).join(' ')}`);
-  const after = await reconcileScope(d.db, await d.readAccount(), active, d.now().getTime());
+  const after = await reconcileScope(d.db, await d.readAccount(), active, d.now().getTime(), clean);
   return { stage: 'done', reasons: after.reasons, intentId: intent.intentId, protection: protection.map(p => ({ role: p.role, status: p.status })), reconciled: after.accountReconciled };
  } finally { await writer.close(); }
 }

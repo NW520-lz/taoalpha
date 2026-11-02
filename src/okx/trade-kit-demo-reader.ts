@@ -89,6 +89,22 @@ export async function createDemoReadSession(peer: TradeKitPeer, scope: DemoScope
   }
 
   return {
+    /** Spot conditional and trailing algo orders the exchange reports as triggered (history, state effective). */
+    async triggeredAlgos(instId: string): Promise<Record<string, unknown>[]> {
+      const rows: Record<string, unknown>[] = [];
+      for (const ordType of ["conditional", "move_order_stop"]) {
+        let after: string | undefined;
+        for (let page = 0; ; page += 1) {
+          if (page >= 20) unavailable("tradekit.pagination_limit");
+          const parsed = result.safeParse(await readPayload(peer, "spot_get_algo_orders", { status: "history", state: "effective", ordType, instId, limit: 100, ...(after ? { after } : {}) }));
+          if (!parsed.success || parsed.data.endpoint !== "GET /api/v5/trade/orders-algo-history") unavailable("tradekit.read_response");
+          rows.push(...parsed.data.data);
+          if (parsed.data.data.length < 100) break;
+          after = String(parsed.data.data.at(-1)!.algoId);
+        }
+      }
+      return rows;
+    },
     /** One spot order by client order id; absent only when the exchange says so, any other failure is unavailable. */
     async orderByClientId(instId: string, clOrdId: string): Promise<{ status: "found"; row: Record<string, unknown> } | { status: "not_found" }> {
       let raw: unknown;

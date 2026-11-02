@@ -11,6 +11,7 @@ export interface DemoWriter {
  placeEntry(args: Record<string, string>): Promise<WriteOutcome>;
  placeAlgo(args: Record<string, string>): Promise<WriteOutcome>;
  cancelOrder(args: Record<string, string>): Promise<WriteOutcome>;
+ cancelAlgo(args: Record<string, string>): Promise<WriteOutcome>;
 }
 type Intent = { intentId: string; cardHash: string; instId: string; baseQuantity: string; actions: Array<{ role: string; clientOrderId: string }> };
 type Recorded = { status: 'sending' | 'accepted' | 'rejected' | 'unknown'; exchangeId: string | null; code: string | null };
@@ -85,6 +86,11 @@ export function createDemoExecutor(db: Db, writer: DemoWriter, now: () => Date) 
   async cancelRemainingEntry(intentId: string) {
    const { intent } = load(intentId), entryId = intent.actions.find(a => a.role === 'entry')!.clientOrderId;
    return sendOnce(intentId, 'cancel_entry', `cancel-${entryId}`, { instId: intent.instId, clOrdId: entryId }, writer.cancelOrder);
+  },
+  /** Cancels one of this intent's protective algo orders by its exchange id, once (the sibling of a triggered stop). */
+  async cancelProtection(intentId: string, role: 'initial_stop' | 'trailing_stop', algoId: string) {
+   const { intent } = load(intentId), clientId = intent.actions.find(a => a.role === role)!.clientOrderId;
+   return sendOnce(intentId, `cancel_${role}`, `cancel-${clientId}`, { instId: intent.instId, algoId }, writer.cancelAlgo);
   },
   /** Sells only what this intent holds, at market, with a client order id derived from its card, once. */
   async exitIntentExposure(intentId: string, holding: { heldQty: string; lotSz: string }) {

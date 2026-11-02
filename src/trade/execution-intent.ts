@@ -7,9 +7,10 @@ import type { RiskCommitment } from '../risk/entry-risk.ts';
 import type { TradeCard } from './veto-window.ts';
 
 const ROLES = [['entry', 'e'], ['initial_stop', 's'], ['trailing_stop', 't']] as const;
-const TABLES = ['execution_intents', 'execution_intent_actions'];
+const TABLES = ['execution_intents', 'execution_intent_actions', 'execution_exits'];
 const DDL = [
  `CREATE TABLE IF NOT EXISTS execution_intents(intent_id TEXT PRIMARY KEY,card_hash TEXT UNIQUE NOT NULL,scope_id TEXT NOT NULL,content_json TEXT NOT NULL,created_at TEXT NOT NULL)`,
+ `CREATE TABLE IF NOT EXISTS execution_exits(intent_id TEXT PRIMARY KEY REFERENCES execution_intents(intent_id),detected_at TEXT NOT NULL)`,
  `CREATE TABLE IF NOT EXISTS execution_intent_actions(client_order_id TEXT PRIMARY KEY,intent_id TEXT NOT NULL REFERENCES execution_intents(intent_id),role TEXT NOT NULL,UNIQUE(intent_id,role))`,
  ...TABLES.flatMap(t => [`CREATE TRIGGER IF NOT EXISTS ${t}_no_update BEFORE UPDATE ON ${t} BEGIN SELECT RAISE(ABORT,'immutable'); END`, `CREATE TRIGGER IF NOT EXISTS ${t}_no_delete BEFORE DELETE ON ${t} BEGIN SELECT RAISE(ABORT,'immutable'); END`]),
 ];
@@ -34,7 +35,7 @@ export function createExecutionIntentService(db: Db, now: () => Date) {
   const sentTable = !!getRow(db, "SELECT 1 FROM sqlite_master WHERE type='table' AND name='execution_submissions'");
   const rows = allRows<{ content_json: string; expires_at: string; sent: number }>(db, `SELECT i.content_json, json_extract(c.card_json,'$.expiresAt') expires_at,
    ${sentTable ? '(SELECT count(*) FROM execution_submissions s WHERE s.intent_id=i.intent_id)' : '0'} sent
-   FROM execution_intents i JOIN veto_cards c ON c.card_hash=i.card_hash WHERE i.scope_id=? ORDER BY i.rowid`, scopeId);
+   FROM execution_intents i JOIN veto_cards c ON c.card_hash=i.card_hash WHERE i.scope_id=? AND i.intent_id NOT IN (SELECT intent_id FROM execution_exits) ORDER BY i.rowid`, scopeId);
   const at = now().getTime();
   return rows.filter(r => r.sent > 0 || Date.parse(r.expires_at) > at).map(view);
  };
@@ -49,6 +50,8 @@ export function createExecutionIntentService(db: Db, now: () => Date) {
    });
   },
   openPositions(scopeId: string) { return open(scopeId).length; },
+  /** A stop triggered and no protective order of the intent is left at the exchange: the intent is final and released. */
+  markExited(intentId: string) { inTransaction(db, () => { if (!getRow(db, 'SELECT 1 FROM execution_exits WHERE intent_id=?', intentId)) db.prepare('INSERT INTO execution_exits VALUES(?,?)').run(intentId, now().toISOString()); }); },
   /** Every intent of the scope in creation order, for reconciliation. */
   list(scopeId: string) { return open(scopeId); },
   consume(cardHash: string) {

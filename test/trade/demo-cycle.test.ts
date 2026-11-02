@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { openDb } from '../../src/store/db.ts';
-import { runDemoCycle, type CycleDeps } from '../../src/trade/demo-cycle.ts';
+import { reconcileScope, runDemoCycle, type CycleDeps } from '../../src/trade/demo-cycle.ts';
 
 const H4 = 4 * 3_600_000, START = Date.parse('2026-11-03T08:00:05Z');
 const page = (endpoint: string, rows: Record<string, unknown>[] = []) => ({ status: 'ok' as const, pages: [{ endpoint, requestTime: new Date(START).toISOString(), rows }] });
@@ -10,7 +10,7 @@ const grant = { version: 1, environment: 'demo' as const, strategy: { id: 'pipel
 
 function deps(decision: 'elapsed' | 'rejected') {
  const db = openDb(':memory:'), clock = { now: START };
- const sent: Array<Record<string, string>> = [];
+ const sent: Array<Record<string, string>> = [], triggered: Array<Record<string, unknown>> = [];
  const d: CycleDeps = {
   db, now: () => new Date(clock.now), sleep: async (ms) => { clock.now += ms; }, log: () => {},
   refreshSession: async () => true,
@@ -21,20 +21,22 @@ function deps(decision: 'elapsed' | 'rejected') {
    quote: { priceUsdt: '100', at: new Date(clock.now).toISOString(), sourceRef: 'ticker:synthetic' },
    instrument: { instId: 'BTC-USDT', product: 'spot', baseCcy: 'BTC', quoteCcy: 'USDT', state: 'live', listTime: null, tickSz: '0.1', lotSz: '0.0001', minSz: '0.001', ctVal: null } }),
   readAccount: async () => {
-   const live = sent.filter(a => a.ordType === 'conditional' || a.ordType === 'move_order_stop').map(a => ({ instId: 'BTC-USDT', algoClOrdId: a.algoClOrdId, state: 'live' }));
+   const fired = new Set(triggered.map(t => t.algoClOrdId)), cancelled = new Set(sent.filter(a => a.algoId).map(a => a.algoId));
+   const live = sent.filter(a => (a.ordType === 'conditional' || a.ordType === 'move_order_stop') && !fired.has(a.algoClOrdId) && !cancelled.has(`alg-${a.algoClOrdId}`)).map(a => ({ instId: 'BTC-USDT', algoClOrdId: a.algoClOrdId, algoId: `alg-${a.algoClOrdId}`, state: 'live' }));
    const bought = sent.some(a => a.side === 'buy');
    return { snapshot: { scope: { scopeId: 'scope:demo', site: 'global', environment: 'demo' }, accountReadComplete: true, reconciled: false, executionAuthorized: false, missing: [] as never,
      parts: { config: page('c'), balance: page('b'), positions: page('p'), spotOrders: page('o'), perpetualOrders: page('o'), spotProtection: page('a', live), perpetualProtection: page('a'), bills: page('bl'), fills: page('f') } } as never,
-    account: { ok: true, readsComplete: true, account: { positions: [], equity: { assets: bought ? [{ currency: 'BTC', equity: { amount: '0.0493', unit: 'coin' } }] : [] } } } as never,
-    orderByClientId: async (_inst, clOrdId) => ({ status: 'found' as const, row: { clOrdId, state: 'filled', accFillSz: '0.0493', fee: '-0.0000493', feeCcy: 'BTC' } }) };
+    account: { ok: true, readsComplete: true, account: { positions: [], equity: { assets: bought ? [{ currency: 'BTC', equity: { amount: triggered.length ? '0.00005' : '0.0493', unit: 'coin' } }] : [] } } } as never,
+    orderByClientId: async (_inst, clOrdId) => ({ status: 'found' as const, row: { clOrdId, state: 'filled', accFillSz: '0.0493', fee: '-0.0000493', feeCcy: 'BTC' } }), triggeredAlgos: async () => triggered };
   },
   display: { show: async (_card, onShown) => { onShown(); return decision; } },
   openWriter: async () => ({ close: async () => {},
    placeEntry: async (a) => { sent.push(a); return { status: 'accepted', exchangeId: 'o-1' }; },
    placeAlgo: async (a) => { sent.push(a); return { status: 'accepted', exchangeId: 'a-' + sent.length }; },
-   cancelOrder: async (a) => { sent.push(a); return { status: 'accepted', exchangeId: 'c' }; } }),
+   cancelOrder: async (a) => { sent.push(a); return { status: 'accepted', exchangeId: 'c' }; },
+   cancelAlgo: async (a) => { sent.push(a); return { status: 'accepted', exchangeId: a.algoId! }; } }),
  };
- return { d, db, sent };
+ return { d, db, sent, triggered };
 }
 
 test('an unrejected pipeline card is approved after its window, filled, protected and reconciled', async () => {
@@ -72,5 +74,20 @@ test('the session is refreshed before the card is submitted, before it is shown 
   await runDemoCycle(d);
   assert.deepEqual(order.slice(0, 4), ['refresh', 'refresh', 'refresh', 'show']);
   assert.equal(order[4], 'refresh');
+ } finally { db.close(); }
+});
+
+test('after a stop triggers, the next cycle cancels the pending sibling, and the one after releases the intent', async () => {
+ const { d, db, sent, triggered } = deps('elapsed'); try {
+  const opened = await runDemoCycle(d) as { stage: string; intentId: string };
+  assert.equal(opened.stage, 'done');
+  triggered.push({ algoClOrdId: sent.find(a => a.ordType === 'conditional')!.algoClOrdId, state: 'effective' });
+  const trailingId = sent.find(a => a.ordType === 'move_order_stop')!.algoClOrdId;
+  // The exited intent holds nothing managed; the leftover is dust below the 0.001 minimum, so nothing blocks.
+  assert.deepEqual((await reconcileScope(db, await d.readAccount(), d.activeGrant()!, d.now().getTime(), { BTC: '0.001' })).reasons, []);
+  assert.deepEqual(await runDemoCycle(d), { stage: 'housekeeping', reasons: [], released: [], cancelled: ['trailing_stop=accepted'] });
+  assert.deepEqual(sent.at(-1), { instId: 'BTC-USDT', algoId: `alg-${trailingId}` });
+  assert.deepEqual(await runDemoCycle(d), { stage: 'housekeeping', reasons: [], released: [opened.intentId], cancelled: [] });
+  assert.equal(sent.filter(a => a.side === 'buy').length, 1);
  } finally { db.close(); }
 });
