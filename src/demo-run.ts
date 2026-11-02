@@ -80,7 +80,8 @@ try {
   print(await runDemoCycle(deps));
  } else if (command === 'status') {
   const active = grants.internalActive();
-  const recon = active ? await reconcileScope(db, await readAccount(), active, Date.now()) : null;
+  const inst = active ? (await market()).instrument : null;
+  const recon = active ? await reconcileScope(db, await readAccount(), active, Date.now(), { [inst!.baseCcy]: inst!.minSz }) : null;
   print({ standingGrant: active ? { proposalId: active.proposalId, validUntil: active.grant.validUntil, vetoWindowSeconds: active.grant.vetoWindowSeconds } : null,
    reconciliation: recon && { blockNewRisk: recon.blockNewRisk, reasons: recon.reasons, intents: recon.intents } });
  } else if (command === 'revoke') {
