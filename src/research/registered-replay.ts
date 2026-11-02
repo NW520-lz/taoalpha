@@ -1,0 +1,120 @@
+import {z} from 'zod';
+import {Decimal} from '../lib/decimal.ts';
+import {DomainError} from '../lib/errors.ts';
+import {BARS,getHistory} from '../market/history.ts';
+import type {Db} from '../store/db.ts';
+import {inspectExperimentHistory} from './experiment-history.ts';
+import type {createExperimentRegistry,ExperimentRegistration} from './experiment-registry.ts';
+import {parseReplayInput} from './research-evaluation.ts';
+import {replayTrendCandles} from './trend-replay.ts';
+import {replayGridCandles,type GridReplayConfig} from './grid-replay.ts';
+
+/** Realized public funding events of a perpetual manifest; spot replays take none. */
+export const fundingEventsFor=(loaded:LoadedExperiment,replay:RegisteredReplay)=>replay.market.product==='usdt_perpetual' ? {fundingEvents:loaded.manifest.funding.events.map(({fundingTime,realizedRate})=>({fundingTime,realizedRate}))} : {};
+
+// Scope and identifiers are validated by inspectExperimentHistory; this only fixes the request shape.
+const requestSchema=z.strictObject({experimentId:z.string(),version:z.number(),expected:z.unknown(),window:z.enum(['exploration','validation','evaluation'])});
+export type Registry=Pick<ReturnType<typeof createExperimentRegistry>,'get'>;
+type Segment={firstOpenMs:number;endsAt:'window_end'|'data_gap';result:ReturnType<typeof replayTrendCandles>|ReturnType<typeof replayGridCandles>};
+export type TimedTrade=ReturnType<typeof timedTrades>[number];
+
+/** Trades of replayed segments with absolute entry/exit bar open times, ordered by exit. */
+export function timedTrades(segments:Segment[],resolutionMs:number) {
+ return segments.flatMap(s=>s.result.hypotheticalTrades.map(t=>({...t,endsAt:s.endsAt,entryOpenMs:s.firstOpenMs+t.entryIndex*resolutionMs,exitOpenMs:s.firstOpenMs+t.exitIndex*resolutionMs})))
+  .sort((a,b)=>a.exitOpenMs-b.exitOpenMs);
+}
+
+// Ratios and averages may not terminate; they are rounded half-even to 10 decimal places.
+const ratio=(a:Decimal,b:Decimal)=>a.div(b).toDecimalPlaces(10,Decimal.ROUND_HALF_EVEN).toFixed();
+const total=(list:Decimal[])=>list.reduce((a,b)=>a.plus(b),new Decimal(0));
+
+/**
+ * Window metrics over realized exits (stop or gap) in time order. A position still open when a
+ * segment ends is only a close-price mark: at the window end it is reported separately, at a data
+ * gap its outcome is unknown and it is only counted. Without realized exits amounts are null, not zero.
+ */
+export function tradeMetrics(all:Array<Pick<TimedTrade,'exitReason'|'endsAt'|'grossUsdt'|'feesUsdt'|'impactUsdt'|'fundingUsdt'|'netUsdt'>>) {
+ const trades=all.filter(t=>t.exitReason!=='end_of_data');
+ const marked=all.filter(t=>t.exitReason==='end_of_data' && t.endsAt==='window_end');
+ const sum=(pick:(t:typeof trades[number])=>string)=>total(trades.map(t=>new Decimal(pick(t))));
+ const gross=sum(t=>t.grossUsdt), fees=sum(t=>t.feesUsdt), impact=sum(t=>t.impactUsdt), funding=sum(t=>t.fundingUsdt), net=sum(t=>t.netUsdt);
+ const nets=trades.map(t=>new Decimal(t.netUsdt)), winners=nets.filter(n=>n.gt(0)), losers=nets.filter(n=>n.lte(0));
+ // Drawdown of cumulative realized net, starting from zero.
+ let cumulative=new Decimal(0), peak=new Decimal(0), drawdown=new Decimal(0);
+ for(const n of nets){cumulative=cumulative.plus(n);peak=Decimal.max(peak,cumulative);drawdown=Decimal.max(drawdown,peak.minus(cumulative));}
+ const any=trades.length>0, amount=(d:Decimal)=>any ? d.toFixed() : null;
+ return {
+  realizedTrades:trades.length,
+  markedAtWindowEnd:{trades:marked.length,netUsdt:marked.length ? total(marked.map(t=>new Decimal(t.netUsdt))).toFixed() : null},
+  unresolvedAtGap:all.length-trades.length-marked.length,
+  grossUsdt:amount(gross),feesUsdt:amount(fees),impactUsdt:amount(impact),fundingUsdt:amount(funding),costUsdt:amount(fees.plus(impact).plus(funding)),netUsdt:amount(net),
+  costToGrossRatio:gross.gt(0) ? ratio(fees.plus(impact).plus(funding),gross) : null,
+  wins:winners.length,winRate:any ? ratio(new Decimal(winners.length),new Decimal(trades.length)) : null,
+  averageWinUsdt:winners.length ? ratio(total(winners),new Decimal(winners.length)) : null,
+  averageLossUsdt:losers.length ? ratio(total(losers),new Decimal(losers.length)) : null,
+  maxDrawdownUsdt:amount(drawdown),tradeNetsUsdt:nets.map(n=>n.toFixed()),
+ };
+}
+
+type Request={experimentId:string;version:number;expected:unknown};
+export type WindowName='exploration'|'validation'|'evaluation';
+export type RegisteredReplay=NonNullable<ExperimentRegistration['replay']>;
+export const isGridReplay=(replay:RegisteredReplay):replay is GridReplayConfig=>replay.rule.kind==='grid_spot';
+/** Cross-sectional selection exists only on trend rules. */
+export const selectionOf=(replay:RegisteredReplay|undefined)=>replay && !isGridReplay(replay) ? replay.selection : undefined;
+
+/** Verified registration plus its bound manifest. Internal: callers own any window-access policy. */
+export function loadRegisteredExperiment(db:Db,registry:Registry,request:Request) {
+ const inspection=inspectExperimentHistory(db,registry,{experimentId:request.experimentId,version:request.version,expected:request.expected});
+ const registration=registry.get(request.experimentId,request.version)!;
+ const manifest=getHistory(db,inspection.reference)!;
+ return {request,inspection,registration,manifest,resolutionMs:BARS[manifest.request.resolution]};
+}
+export type LoadedExperiment=ReturnType<typeof loadRegisteredExperiment>;
+
+/** Candles of a registered window: whole bars only, gaps left as they are. */
+export function windowCandles(loaded:LoadedExperiment,name:WindowName) {
+ const window=loaded.registration.windows[name];
+ const range={start:Date.parse(window.start),end:Date.parse(window.end)};
+ return {range,candles:loaded.manifest.candles.filter(c=>c.ts>=range.start && c.closeTime<=range.end)};
+}
+
+/** Replays one registered window with the given parameters (the registered ones unless overridden). */
+export function replayWindow(loaded:LoadedExperiment,name:WindowName,replay:RegisteredReplay|undefined=loaded.registration.replay) {
+ const {inspection,registration,resolutionMs,request}=loaded;
+ const {range,candles:inWindow}=windowCandles(loaded,name);
+ const base={experimentId:request.experimentId,version:request.version,registrationSha256:registration.contentSha256,scopeBinding:inspection.expectedScopeBinding,history:{reference:inspection.reference,sha256:inspection.sha256},window:name,range,status:'insufficient' as const,executionAuthorized:false as const,unknowns:inspection.unknowns};
+ // Prose rules are never interpreted into numbers; only frozen structured parameters run.
+ if(!replay) return {...base,outcome:'blocked' as const,reasonCode:'rules_incomplete' as const,segments:[],metrics:null,maxEquityDrawdownUsdt:null};
+ if(!inWindow.length) return {...base,outcome:'blocked' as const,reasonCode:'missing_required_evidence' as const,segments:[],metrics:null,maxEquityDrawdownUsdt:null};
+ // A missing candle splits the window; no position or signal is carried across a gap.
+ const pieces:typeof inWindow[]=[];
+ for(const c of inWindow) {
+  const last=pieces.at(-1)?.at(-1);
+  if(last && c.ts===last.ts+resolutionMs) pieces.at(-1)!.push(c); else pieces.push([c]);
+ }
+ const segments=pieces.map(candles=>{
+  // A bound counts as the window edge when no whole bar fits between it and the segment.
+  const startsAt=candles[0]!.ts-resolutionMs<range.start ? 'window_start' as const : 'data_gap' as const;
+  const endsAt=candles.at(-1)!.closeTime+resolutionMs>range.end ? 'window_end' as const : 'data_gap' as const;
+  // Each registered rule kind runs on its own engine; the evaluation chain only sees the shared trade shape.
+  const result=isGridReplay(replay) ? replayGridCandles({schemaVersion:1,...replay,resolutionMs,candles}) : replayTrendCandles({schemaVersion:1,...replay,resolutionMs,candles,...fundingEventsFor(loaded,replay)});
+  // A position still open where data is missing has an unknown outcome; its mark is not a result.
+  const openAtGap=endsAt==='data_gap' && (result.hypotheticalTrades as Array<{exitReason:string}>).some(t=>t.exitReason==='end_of_data');
+  return {firstOpenMs:candles[0]!.ts,lastCloseMs:candles.at(-1)!.closeTime,candles:candles.length,startsAt,endsAt,openAtGap,result};
+ });
+ // A grid restarts in each segment, so across a gap this is the largest segment drawdown, a lower bound.
+ const equity=segments.flatMap(s=>'maxEquityDrawdownUsdt' in s.result ? [new Decimal(s.result.maxEquityDrawdownUsdt)] : []);
+ return {...base,outcome:'replayed' as const,reasonCode:null,segments,metrics:tradeMetrics(timedTrades(segments,resolutionMs)),maxEquityDrawdownUsdt:equity.length ? Decimal.max(...equity).toFixed() : null};
+}
+
+/**
+ * Replays a registered experiment with only its frozen parameters, on only the candles of one
+ * registered window of its bound history manifest. Read-only; never validates a strategy.
+ */
+export function replayRegisteredExperiment(db:Db,registry:Registry,raw:unknown) {
+ const request=parseReplayInput(requestSchema,raw);
+ // The final window may be looked at exactly once, only through the run-once evaluation report.
+ if(request.window==='evaluation') throw new DomainError('UNSUPPORTED_CAPABILITY','Evaluation window is sealed',[{ruleId:'experiment.evaluation_window_sealed'}]);
+ return replayWindow(loadRegisteredExperiment(db,registry,request),request.window);
+}

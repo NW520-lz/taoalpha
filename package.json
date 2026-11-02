@@ -1,0 +1,32 @@
+{
+  "name": "taoalpha",
+  "version": "0.1.0",
+  "private": true,
+  "description": "TaoAlpha: agent research with rule-based gates and human-approved trading (M0: read-only research).",
+  "license": "MIT",
+  "type": "module",
+  "engines": {
+    "node": ">=24"
+  },
+  "scripts": {
+    "test": "node --test \"test/**/*.test.ts\"",
+    "test:live": "node --test \"test-live/**/*.live.ts\"",
+    "test:demo-session": "node --test test-live/okx-demo-session.integration.ts",
+    "typecheck": "tsc -p .",
+    "okx": "node src/main.ts",
+    "demo:check": "node src/demo-main.ts",
+    "demo:run": "node src/demo-run.ts",
+    "mcp": "node src/mcp-main.ts"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "1.32.2",
+    "@okx_ai/okx-trade-mcp": "1.5.0",
+    "decimal.js": "10.6.0",
+    "smol-toml": "1.9.1",
+    "zod": "4.6.7"
+  },
+  "devDependencies": {
+    "@types/node": "24.19.2",
+    "typescript": "7.0.2"
+  }
+}
