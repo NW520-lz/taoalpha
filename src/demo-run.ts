@@ -73,7 +73,8 @@ try {
   const policy = JSON.parse(readFileSync(values.policy ?? '.scratch/m1-demo-loop/demo-policy.json', 'utf8')) as { version: number };
   const grant = JSON.parse(readFileSync(values.grant ?? '.scratch/m1-demo-loop/demo-grant.json', 'utf8')) as { version: number; validUntil: string };
   const tenMinutes = new Date(Date.now() + 600_000).toISOString();
-  const policyStatus = await confirmWith(() => ({ ...policies.propose({ proposalId: `demo-policy-v${policy.version}`, policy, expiresAt: tenMinutes }), proposalId: `demo-policy-v${policy.version}` }), policies.confirm);
+  // A policy version already confirmed for this scope is kept as it is; re-proposing it would change its frozen content.
+  const policyStatus = riskPolicy(policy.version) ? 'confirmed' : await confirmWith(() => ({ ...policies.propose({ proposalId: `demo-policy-v${policy.version}`, policy, expiresAt: tenMinutes }), proposalId: `demo-policy-v${policy.version}` }), policies.confirm);
   const grantStatus = policyStatus === 'confirmed' || policyStatus === 'active' ? await confirmWith(() => grants.propose({ proposalId: `demo-grant-v${grant.version}`, grant, confirmBy: tenMinutes }), grants.confirm) : 'skipped';
   print({ ok: grantStatus === 'active', riskPolicy: policyStatus, standingGrant: grantStatus });
  } else if (command === 'cycle') {
