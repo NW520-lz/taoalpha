@@ -25,7 +25,12 @@ const TOOLS = {
   perpetualOrders: { tool: "swap_get_orders", endpoint: "GET /api/v5/trade/orders-pending" },
   spotProtection: { tool: "spot_get_algo_orders", endpoint: "GET /api/v5/trade/orders-algo-pending" },
   perpetualProtection: { tool: "swap_get_algo_orders", endpoint: "GET /api/v5/trade/orders-algo-pending" },
+  bills: { tool: "account_get_bills", endpoint: "GET /api/v5/account/bills" },
+  fills: { tool: "spot_get_fills", endpoint: "GET /api/v5/trade/fills" },
 } as const;
+const ORDER_LOOKUP = { tool: "spot_get_order", endpoint: "GET /api/v5/trade/order" } as const;
+/** OKX "Order does not exist": the only error that means a client order id is absent rather than unreadable. */
+const ORDER_NOT_FOUND = "51603";
 
 export interface PrivateReadPage { endpoint: string; requestTime: string; rows: Record<string, unknown>[] }
 export type DemoReadPart = { status: "ok"; pages: PrivateReadPage[] } | { status: "unavailable"; reason: "read_failed_or_incomplete" };
@@ -52,7 +57,7 @@ export async function createDemoReadSession(peer: TradeKitPeer, scope: DemoScope
   const listed = z.object({ tools: z.array(z.object({ name: z.string(), annotations: z.object({ readOnlyHint: z.literal(true) }) })) }).safeParse(toolList);
   if (!listed.success) unavailable("tradekit.read_only_toolset");
   const names = new Set(listed.data.tools.map((tool) => tool.name));
-  if (!["system_get_capabilities", ...Object.values(TOOLS).map((tool) => tool.tool)].every((name) => names.has(name))) unavailable("tradekit.required_reads");
+  if (!["system_get_capabilities", ORDER_LOOKUP.tool, ...Object.values(TOOLS).map((tool) => tool.tool)].every((name) => names.has(name))) unavailable("tradekit.required_reads");
   const system = await readPayload(peer, "system_get_capabilities", {});
   const advertised = z.object({ server: z.object({ name: z.literal("okx-trade-mcp"), version: z.literal(TRADE_KIT_VERSION) }), capabilities }).safeParse(system);
   if (!advertised.success) unavailable("tradekit.demo_capabilities");
@@ -64,7 +69,7 @@ export async function createDemoReadSession(peer: TradeKitPeer, scope: DemoScope
     return { endpoint: parsed.data.endpoint, requestTime: parsed.data.requestTime, rows: parsed.data.data };
   }
 
-  async function paged(kind: keyof typeof TOOLS, args: Record<string, unknown>, idField: "ordId" | "algoId"): Promise<PrivateReadPage[]> {
+  async function paged(kind: keyof typeof TOOLS, args: Record<string, unknown>, idField: "ordId" | "algoId" | "billId"): Promise<PrivateReadPage[]> {
     const pages: PrivateReadPage[] = [];
     const seen = new Set<string>();
     let after: string | undefined;
@@ -84,6 +89,19 @@ export async function createDemoReadSession(peer: TradeKitPeer, scope: DemoScope
   }
 
   return {
+    /** One spot order by client order id; absent only when the exchange says so, any other failure is unavailable. */
+    async orderByClientId(instId: string, clOrdId: string): Promise<{ status: "found"; row: Record<string, unknown> } | { status: "not_found" }> {
+      let raw: unknown;
+      try { raw = await peer.callTool({ name: ORDER_LOOKUP.tool, arguments: { instId, clOrdId } }); }
+      catch { unavailable("tradekit.transport"); }
+      const failed = z.object({ isError: z.literal(true), structuredContent: z.object({ tool: z.literal(ORDER_LOOKUP.tool), code: z.string() }) }).safeParse(raw);
+      if (failed.success) { if (failed.data.structuredContent.code === ORDER_NOT_FOUND) return { status: "not_found" }; unavailable("tradekit.read_error"); }
+      const envelope = z.object({ structuredContent: z.unknown() }).safeParse(raw);
+      const parsed = envelope.success ? payload.safeParse(envelope.data.structuredContent) : undefined;
+      const page = parsed?.success && parsed.data.tool === ORDER_LOOKUP.tool ? result.safeParse(parsed.data.data) : undefined;
+      if (!page?.success || page.data.endpoint !== ORDER_LOOKUP.endpoint || page.data.data.length !== 1 || page.data.data[0]!.clOrdId !== clOrdId) unavailable("tradekit.read_response");
+      return { status: "found", row: page.data.data[0]! };
+    },
     /** Private rows remain inside the backend. These reads do not establish ownership or a reconciled ledger. */
     async refresh(): Promise<DemoReadSnapshot> {
       const reads: Record<keyof typeof TOOLS, () => Promise<PrivateReadPage[]>> = {
@@ -102,6 +120,9 @@ export async function createDemoReadSession(peer: TradeKitPeer, scope: DemoScope
         perpetualOrders: () => paged("perpetualOrders", { status: "open", instType: "SWAP" }, "ordId"),
         spotProtection: async () => (await Promise.all(["conditional", "oco", "move_order_stop"].map((ordType) => paged("spotProtection", { status: "pending", ordType }, "algoId")))).flat(),
         perpetualProtection: async () => (await Promise.all(["conditional", "oco", "move_order_stop"].map((ordType) => paged("perpetualProtection", { status: "pending", instType: "SWAP", ordType }, "algoId")))).flat(),
+        // Exchange defaults: bills cover the last 7 days and spot fills the last 3 days.
+        bills: () => paged("bills", {}, "billId"),
+        fills: () => paged("fills", {}, "billId"),
       };
       const entries = await Promise.all(Object.entries(reads).map(async ([name, load]) => {
         try { return [name, { status: "ok", pages: await load() } satisfies DemoReadPart] as const; }

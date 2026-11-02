@@ -5,6 +5,7 @@ const ENDPOINTS = {
   config: "GET /api/v5/account/config", balance: "GET /api/v5/account/balance", positions: "GET /api/v5/account/positions",
   spotOrders: "GET /api/v5/trade/orders-pending", perpetualOrders: "GET /api/v5/trade/orders-pending",
   spotProtection: "GET /api/v5/trade/orders-algo-pending", perpetualProtection: "GET /api/v5/trade/orders-algo-pending",
+  bills: "GET /api/v5/account/bills", fills: "GET /api/v5/trade/fills",
 } as const;
 type Part = keyof typeof ENDPOINTS;
 export const DEMO_ACCOUNT_GAPS = ["capital_history", "managed_ownership", "auto_add_margin_verification", "contract_metadata_valuation", "protected_coverage", "approved_risk_config"] as const;

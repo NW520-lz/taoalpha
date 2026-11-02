@@ -12,13 +12,14 @@ const endpoints = {
   config: "GET /api/v5/account/config", balance: "GET /api/v5/account/balance", positions: "GET /api/v5/account/positions",
   spotOrders: "GET /api/v5/trade/orders-pending", perpetualOrders: "GET /api/v5/trade/orders-pending",
   spotProtection: "GET /api/v5/trade/orders-algo-pending", perpetualProtection: "GET /api/v5/trade/orders-algo-pending",
+  bills: "GET /api/v5/account/bills", fills: "GET /api/v5/trade/fills",
 } as const;
 
 function snapshot(scope: DemoScope, uid = "synthetic-uid-sentinel"): DemoReadSnapshot {
   const data: Record<keyof typeof endpoints, Record<string, unknown>[]> = {
     config: [{ uid, acctLv: "2", posMode: "net_mode" }],
     balance: [{ totalEq: "12345.67890123456789", uTime: "1700000000000", details: [{ ccy: "USDT", eq: "12345.67890123456789" }] }],
-    positions: [], spotOrders: [], perpetualOrders: [], spotProtection: [], perpetualProtection: [],
+    positions: [], spotOrders: [], perpetualOrders: [], spotProtection: [], perpetualProtection: [], bills: [], fills: [],
   };
   return { scope, parts: Object.fromEntries(Object.entries(endpoints).map(([part, endpoint]) =>
     [part, { status: "ok", pages: [{ endpoint, requestTime: AT.toISOString(), rows: data[part as keyof typeof endpoints] }] }])) as DemoReadSnapshot["parts"],

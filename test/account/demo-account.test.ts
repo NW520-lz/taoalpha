@@ -10,6 +10,7 @@ const ENDPOINTS = {
   config: "GET /api/v5/account/config", balance: "GET /api/v5/account/balance", positions: "GET /api/v5/account/positions",
   spotOrders: "GET /api/v5/trade/orders-pending", perpetualOrders: "GET /api/v5/trade/orders-pending",
   spotProtection: "GET /api/v5/trade/orders-algo-pending", perpetualProtection: "GET /api/v5/trade/orders-algo-pending",
+  bills: "GET /api/v5/account/bills", fills: "GET /api/v5/trade/fills",
 } as const;
 function position(overrides: Record<string, unknown> = {}) {
   return { posId: "synthetic-position-sentinel", instId: "BTC-USDT-SWAP", instType: "SWAP", mgnMode: "isolated", posSide: "net", pos: "-0.00000000000000000001", ccy: "USDT", uTime: OLD_UPDATE, ...overrides };
@@ -18,7 +19,7 @@ function fixture(): DemoReadSnapshot {
   const rows: Record<keyof typeof ENDPOINTS, Record<string, unknown>[]> = {
     config: [{ uid: "synthetic-identity-sentinel", acctLv: "4", posMode: "long_short_mode", arbitrarySecret: "do-not-copy-sentinel" }],
     balance: [{ totalEq: PRECISE, uTime: OLD_UPDATE, details: [{ ccy: "BTC", eq: "0.00000000000000000001", cashBal: "", availBal: "", frozenBal: "" }] }],
-    positions: [position()], spotOrders: [], perpetualOrders: [], spotProtection: [], perpetualProtection: [],
+    positions: [position()], spotOrders: [], perpetualOrders: [], spotProtection: [], perpetualProtection: [], bills: [], fills: [],
   };
   return { scope: { scopeId: "synthetic", site: "global", environment: "demo" },
     parts: Object.fromEntries(Object.entries(ENDPOINTS).map(([part, endpoint]) => [part, { status: "ok", pages: [{ endpoint, requestTime: NOW.toISOString(), rows: rows[part as keyof typeof rows] }] }])) as DemoReadSnapshot["parts"],

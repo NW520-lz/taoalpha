@@ -13,7 +13,7 @@ function snapshot(): DemoReadSnapshot {
       balance: page("account/balance", [{ totalEq: "100.000000000000001", uTime: "1700000000000", privateExtra: "synthetic-private-balance-sentinel", details: [{ ccy: "SYNTHETIC_PRIVATE_ASSET", eq: "1" }] }]),
       positions: page("account/positions", [{ posId: "synthetic-private-position-sentinel", instId: "BTC-USDT-SWAP", instType: "SWAP", mgnMode: "isolated", posSide: "net", pos: "-1.000000000000001", ccy: "USDT", uTime: "1700000000000" }]),
       spotOrders: page("trade/orders-pending", [{ ordId: "synthetic-private-order-sentinel" }]), perpetualOrders: page("trade/orders-pending"),
-      spotProtection: page("trade/orders-algo-pending"), perpetualProtection: page("trade/orders-algo-pending"),
+      spotProtection: page("trade/orders-algo-pending"), perpetualProtection: page("trade/orders-algo-pending"), bills: page("account/bills"), fills: page("trade/fills"),
     },
     accountReadComplete: true, reconciled: false, executionAuthorized: false, missing: ["capital_history", "managed_ownership", "auto_add_margin_verification"] };
 }
