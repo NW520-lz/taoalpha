@@ -7,7 +7,8 @@ import { z } from "zod";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { DomainError } from "../lib/errors.ts";
-import { createDemoReadSession, TRADE_KIT_VERSION, type DemoScope, type DemoSite } from "./trade-kit-demo-reader.ts";
+import { createDemoReadSession, TRADE_KIT_VERSION, type DemoScope, type DemoSite, type TradeKitPeer } from "./trade-kit-demo-reader.ts";
+import { createDemoWriteSession } from "./trade-kit-demo-writer.ts";
 
 const BASE_URLS: Record<DemoSite, string> = { global: "https://www.okx.com", eea: "https://eea.okx.com", us: "https://us.okx.com", tr: "https://tr.okx.com" };
 const profileSchema = z.object({
@@ -39,7 +40,8 @@ function parseDemoProfile(text: string, profileName: string, site: DemoSite) {
 }
 
 /** Backend-only connection. The child owns credentials; research callers receive no raw MCP transport. */
-export async function connectTradeKitDemoReader(input: { scopeId: string; profile: string; site: DemoSite }, options: { homeDirectory?: string } = {}) {
+async function startTradeKit<T>(input: { scopeId: string; profile: string; site: DemoSite }, options: { homeDirectory?: string }, mode: { flags: string[]; modules: string; clientName: string },
+  open: (peer: TradeKitPeer, scope: DemoScope) => Promise<T>) {
   const home = options.homeDirectory ?? homedir();
   const configPath = join(home, ".okx", "config.toml");
   let text: string;
@@ -65,15 +67,15 @@ export async function connectTradeKitDemoReader(input: { scopeId: string; profil
   }
   if (selected.proxy_url) { env.HTTPS_PROXY = selected.proxy_url; env.HTTP_PROXY = selected.proxy_url; }
   const transport = new StdioClientTransport({ command: process.execPath,
-    args: [entry, "--profile", input.profile, "--demo", "--read-only", "--modules", "account,spot,swap", "--site", input.site, "--no-log"],
+    args: [entry, "--profile", input.profile, "--demo", ...mode.flags, "--modules", mode.modules, "--site", input.site, "--no-log"],
     env, stderr: "pipe" });
   // Upstream errors can contain account data or configuration fragments; never forward them to a model/log.
   transport.stderr?.on("data", () => {});
-  const client = new Client({ name: "taoalpha-demo-reader", version: "0.1.0" });
+  const client = new Client({ name: mode.clientName, version: "0.1.0" });
   try {
     await client.connect(transport, { timeout: 10_000 });
     const scope: DemoScope = { scopeId: input.scopeId, site: input.site, environment: "demo" };
-    const session = await createDemoReadSession({
+    const session = await open({
       getServerVersion: () => client.getServerVersion(),
       listTools: () => client.listTools({}, { timeout: 10_000 }),
       callTool: (request) => client.callTool(request, undefined, { timeout: 15_000 }),
@@ -84,4 +86,14 @@ export async function connectTradeKitDemoReader(input: { scopeId: string; profil
     cleanup();
     throw new DomainError("DEPENDENCY_UNAVAILABLE", "Trade Kit demo session could not be verified", [{ ruleId: "tradekit.session_verified" }]);
   }
+}
+
+/** Backend-only read connection: demo, read-only, account/spot/swap modules. */
+export function connectTradeKitDemoReader(input: { scopeId: string; profile: string; site: DemoSite }, options: { homeDirectory?: string } = {}) {
+  return startTradeKit(input, options, { flags: ["--read-only"], modules: "account,spot,swap", clientName: "taoalpha-demo-reader" }, createDemoReadSession);
+}
+
+/** Backend-only write connection for the demo executor: demo flag and demo profile required, spot module only. Never a research tool. */
+export function connectTradeKitDemoWriter(input: { scopeId: string; profile: string; site: DemoSite }, options: { homeDirectory?: string } = {}) {
+  return startTradeKit(input, options, { flags: [], modules: "spot", clientName: "taoalpha-demo-writer" }, async (peer, scope) => ({ ...(await createDemoWriteSession(peer, scope)) }));
 }
