@@ -109,3 +109,14 @@ test('separate SQLite connections share attempt uniqueness and respect locks',as
  for(const t of ['experiment_strategy_versions','experiment_preregistrations']) for(const sql of [`UPDATE ${t} SET rowid=rowid`,`DELETE FROM ${t}`,`INSERT OR REPLACE INTO ${t} SELECT * FROM ${t}`]) assert.throws(()=>one.exec(sql));
 });
 
+
+test('a strategy version can be registered on its own, once, with immutable content', () => {
+ const db = openDb(':memory:'); try {
+  const registry = createExperimentRegistry(db, now);
+  const strategy = { id: 'pipeline-test', version: 1, entryRules: 'demo pipeline check only, not a trading strategy', exitRules: 'initial and trailing stop from the card', invalidationRules: 'stop hit' };
+  assert.deepEqual(registry.registerStrategy(strategy), strategy);
+  assert.deepEqual(registry.registerStrategy(strategy), strategy);
+  expectDomainError(() => registry.registerStrategy({ ...strategy, entryRules: 'changed' }), 'IDEMPOTENCY_CONFLICT');
+  expectDomainError(() => registry.registerStrategy({ ...strategy, version: 0 }), 'INVALID_INPUT');
+ } finally { db.close(); }
+});

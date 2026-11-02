@@ -23,8 +23,9 @@ const universeSchema=z.strictObject({
  regimes:z.array(z.strictObject({label,start:z.iso.datetime({offset:true}),end:z.iso.datetime({offset:true})})).min(1).max(20).optional(),
 });
 const window=z.strictObject({start:z.iso.datetime({offset:true}),end:z.iso.datetime({offset:true})});
+const strategySchema=z.strictObject({id:reference,version,entryRules:text,exitRules:text,invalidationRules:text});
 const schema=z.strictObject({experimentId:reference,version,attemptId:reference,
- strategy:z.strictObject({id:reference,version,entryRules:text,exitRules:text,invalidationRules:text}),
+ strategy:strategySchema,
  data:dataSource,code:source,
  costs:z.strictObject({fees:text,spread:text,slippage:text,funding:text,execution:text}),
  windows:z.strictObject({exploration:window,validation:window,evaluation:window}),
@@ -95,6 +96,11 @@ export function createExperimentRegistry(db:Db,now:()=>Date) {
   return parsed;
  }
  return {
+  /** A strategy version on its own (e.g. a demo pipeline check); same immutability as versions written by register. */
+  registerStrategy(raw:unknown) {return safe(()=>{const parsed=strategySchema.safeParse(raw); if(!parsed.success) fail(); const content=canonicalJson(parsed.data); return inTransaction(db,()=>{
+   const prior=getRow<{content:string}>(db,'SELECT content FROM experiment_strategy_versions WHERE strategy_id=? AND version=?',parsed.data.id,parsed.data.version);
+   if(prior){if(prior.content!==content) fail('IDEMPOTENCY_CONFLICT'); return parsed.data;}
+   db.prepare('INSERT INTO experiment_strategy_versions VALUES(?,?,?)').run(parsed.data.id,parsed.data.version,content); return parsed.data;})})},
   register(raw:unknown):ExperimentRegistration {return safe(()=>{const input=readInput(raw); return inTransaction(db,()=>{
    const row=getRow<Row>(db,'SELECT * FROM experiment_preregistrations WHERE (experiment_id=? AND version=?) OR attempt_id=?',input.experimentId,input.version,input.attemptId);
    if(row){const old=parseRow(row); const {schemaVersion,registeredAt,contentSha256,status,dataAvailability,executionAuthorized,...original}=old; if(canonicalJson(original)!==canonicalJson(input)) fail('IDEMPOTENCY_CONFLICT'); return old;}
