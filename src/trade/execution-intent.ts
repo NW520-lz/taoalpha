@@ -41,6 +41,8 @@ export function createExecutionIntentService(db: Db, now: () => Date) {
    });
   },
   openPositions(scopeId: string) { return open(scopeId).length; },
+  /** Every intent of the scope in creation order, for reconciliation. */
+  list(scopeId: string) { return open(scopeId); },
   consume(cardHash: string) {
    return inTransaction(db, () => {
     const existing = getRow<{ content_json: string }>(db, 'SELECT content_json FROM execution_intents WHERE card_hash=?', cardHash);

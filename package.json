@@ -15,6 +15,7 @@
     "typecheck": "tsc -p .",
     "okx": "node src/main.ts",
     "demo:check": "node src/demo-main.ts",
+    "demo:run": "node src/demo-run.ts",
     "mcp": "node src/mcp-main.ts"
   },
   "dependencies": {
